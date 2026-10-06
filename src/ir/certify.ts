@@ -626,7 +626,7 @@ export const certifyIr = (input: CertifyInput): IrCertification => {
     // The owner is the whole function; the first operation that demanded the
     // key is what a reader needs to find the construct inside it.
     const reason = decision.reason || `${demand.key} is ${decision.verdict}`
-    refusals.push({ stage: 'certify', key: demand.key, owner, reason: site ? `${reason} (first at ${String(site.lineage)})` : reason })
+    refusals.push({ stage: 'certify', key: demand.key, owner, reason, ...(site?.lineage ? { lineage: site.lineage } : {}) })
   }
 
   for (const row of input.slotDrift) {

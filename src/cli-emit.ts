@@ -367,9 +367,10 @@ const report = (result: CompileResult, outDirName: string): number => {
         : `compile: certified but nothing emitted; ${result.loweringBlockers.length} lowering blocker(s), ` +
             `${result.emissionRefusals.length} emission refusal(s)\n`
     )
-    for (const blocker of result.loweringBlockers) process.stderr.write(`  lowering  ${blocker.owner}: ${blocker.reason}\n`)
+    for (const blocker of result.loweringBlockers)
+      process.stderr.write(`  lowering  ${refusalSourceLocation(result, blocker)}: ${blocker.reason}\n`)
     for (const refusal of certifyRefusals.slice(0, 40))
-      process.stderr.write(`  certify   ${refusal.owner}: ${refusal.key}: ${refusal.reason}\n`)
+      process.stderr.write(`  certify   ${refusalSourceLocation(result, refusal)}: ${refusal.key}: ${refusal.reason}\n`)
     if (certifyRefusals.length > 40) process.stderr.write(`  ... and ${certifyRefusals.length - 40} more capability refusal(s)\n`)
     for (const refusal of result.emissionRefusals)
       process.stderr.write(`  emission  ${refusalSourceLocation(result, refusal)}: ${refusal.reason}\n`)

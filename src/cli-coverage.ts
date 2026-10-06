@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url'
 import { compile } from './compiler.js'
 import type { CompilationResult } from './compiler.js'
 import type { Diagnostic, DiagnosticLocation } from './diagnostics/model.js'
+import { locationOfRefusal } from './cli-refusal-location.js'
 import { nodeOfOperation, operationOfResult } from './identity/ids.js'
 import type { CompilerPlugin } from './plugins/model.js'
 import { capabilityFamilies, familyOf, isCapabilityKey } from './ir/certify.js'
@@ -235,10 +236,16 @@ const diagnosticRow = (diagnostic: Diagnostic, obligations: ReadonlyMap<string, 
 const statusOf = (diagnostic: Diagnostic): RowStatus =>
   diagnostic.severity === 'derived' ? 'derived' : diagnostic.severity === 'unsupported' ? 'unsupported' : 'refused'
 
-const componentRow = (rowCode: string, layer: string, owner: string, reason: string): CoverageRow => ({
-  file: null,
-  line: 0,
-  column: 0,
+const componentRow = (
+  rowCode: string,
+  layer: string,
+  owner: string,
+  reason: string,
+  location: DiagnosticLocation | null = null
+): CoverageRow => ({
+  file: location?.file ?? null,
+  line: location?.line ?? 0,
+  column: location?.column ?? 0,
   code: rowCode,
   status: 'refused',
   layer,
@@ -290,11 +297,29 @@ const collectRows = (result: CompilationResult, options: CoverageArguments): rea
     if (!options.derived && diagnostic.severity === 'derived') continue
     rows.push(diagnosticRow(diagnostic, obligations))
   }
-  for (const blocker of result.loweringBlockers) rows.push(componentRow(code(5, 1), 'lowering', blocker.owner, blocker.reason))
+  for (const blocker of result.loweringBlockers)
+    rows.push(componentRow(code(5, 1), 'lowering', blocker.owner, blocker.reason, locationOfRefusal(result, blocker)))
   for (const refusal of result.emissionRefusals) {
-    rows.push(componentRow(tableCode(6, emissionCategories, emissionCategoryOf(refusal.reason)), 'emission', refusal.owner, refusal.reason))
+    rows.push(
+      componentRow(
+        tableCode(6, emissionCategories, emissionCategoryOf(refusal.reason)),
+        'emission',
+        refusal.owner,
+        refusal.reason,
+        locationOfRefusal(result, refusal)
+      )
+    )
   }
-  for (const blocker of result.abiBlockers) rows.push(componentRow(code(7, 1), 'abi', blocker.functionId, blocker.reason))
+  for (const blocker of result.abiBlockers)
+    rows.push(
+      componentRow(
+        code(7, 1),
+        'abi',
+        blocker.functionId,
+        blocker.reason,
+        blocker.location ?? locationOfRefusal(result, { owner: blocker.functionId })
+      )
+    )
   // The certification's refusals are `CompileResult.refusals` at stage
   // `certify`, never diagnostics: they are read off the lowered IR, after the
   // sweep that gates lowering has already run (the certifier has already passed). Keyed by capability family so the same missing recipe demanded from
@@ -308,7 +333,8 @@ const collectRows = (result: CompilationResult, options: CoverageArguments): rea
         tableCode(9, capabilityFamilies, familyOf(refusal.key)),
         `certify/${familyOf(refusal.key)}`,
         refusal.owner,
-        `${refusal.key}: ${refusal.reason}`
+        `${refusal.key}: ${refusal.reason}`,
+        locationOfRefusal(result, refusal)
       )
     )
   }
