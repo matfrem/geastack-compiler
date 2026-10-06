@@ -234,11 +234,35 @@ script; if that is still needed, it is better reported as a runtime-header issue
 | 13   | needed (compiler)   | `console.log`; add `Console.warn` to the shim table |
 | 14   | needed              | `Date.now()`                                        |
 
-## What is a compiler defect, not a project defect
+## Fixed in the compiler
 
-Items 1, 4, 5 and 9 are the same defect seen four ways: a value whose type is
-inferred cannot flow into a slot with a declared named type, although the
-literal is assignable. The proper fix is in the compiler (contextual typing of the
-literal at the conversion site, or a record-to-native-record conversion). The
-annotations above are the supported way to work until then, and they cost a type
-name, not a redesign.
+Items 1, 4, 5 and 9 were compiler defects, not project defects, and are fixed.
+They looked like one defect (an inferred literal cannot flow into a slot with a
+declared named type) and turned out to be four causes. The workarounds above
+remain valid on a compiler without the fix; with it they are unnecessary.
+
+| #   | Cause                                                                                                                                                                                                                | Fix                                                                                                                |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| 1   | `Record<K, Def>` is declared in the lib, so the "a lib protocol states no storage beyond the literal" rule dropped the contextual layout whenever `Def` was wider than the literal. A mapped type states no storage. | `structural-layout-type.ts`: mapped types are not lib protocols.                                                   |
+| 5   | A dictionary of anonymous records reaching `Record<string, Named>` had no way to ask for the record view its values need; only a lone literal did.                                                                   | `view:dictionary-values`, decided in `conversions.ts` and rendered in `emit-narrowing.ts` from the same view plan. |
+| 9   | An optional method read publishes `optional(callable)`, and receiver binding only handled a bare callable.                                                                                                           | `receiverBoundFieldText` binds through the optional.                                                               |
+| 4   | A lone interface is not an interface family, and a required field added by an intersection was never absorbed, so the two views were two structs with no identity-preserving conversion.                             | A lone interface becomes a family of one when an intersection adds a field to it (`interface-families.ts`).        |
+
+Regression programs: `test/runtime/record-table-contextual-literal.ts`,
+`dictionary-values-record-view.ts`, `optional-method-interface-call.ts` and
+`intersection-identity-upcast.ts`. Each asserts the output Node itself prints.
+
+Limits worth knowing:
+
+- A dictionary rebuilt through a record view is a **snapshot** of its values, as
+  the existing scalar-valued dictionary recast already is. It is exact for a
+  fresh container such as `Object.fromEntries`' result, not for one a program
+  keeps writing through under two names.
+- Array element conversion is still refused on purpose
+  (`conversions.ts`, "NO CONVERSION IS INSTALLED between two `array-object`
+  carriers"): a copied `ArrayObject` loses writes made through the other name.
+  `const xs: Named[] = anonymousLiterals` stays a refusal; annotate the literal.
+- Laying an intersection out with its interface adds the intersected field to
+  the interface's struct as an optional field behind a presence bit, exactly as an
+  `extends` family does. Programs that intersect a lone interface with fields
+  therefore get a slightly larger struct for it.
