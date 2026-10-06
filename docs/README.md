@@ -9,6 +9,7 @@
 | [DYNAMIC-FALLBACK.md](DYNAMIC-FALLBACK.md)     | `--dynamic-fallback`: what opting in admits, and why execution still stays in generated C++.                                              |
 | [EVAL.md](EVAL.md)                             | `gea::Eval`, the C++ runtime evaluator that runs source produced at run time without embedding a JavaScript engine.                       |
 | [NATIVE-BUILD-CACHE.md](NATIVE-BUILD-CACHE.md) | Object and precompiled-header caching for native builds, and how to turn it off for a control.                                            |
+| [WORKAROUND.md](WORKAROUND.md)                 | Which TypeScript rewrites a native build really needs, which were heavier than necessary, and the lighter fix for each.                   |
 
 The repository [README](../README.md) covers the CLI itself: compiling a file,
 emitting C++, the `coverage` view and its diagnostic code tables.
