@@ -38,6 +38,8 @@ import {
   promisePayloadConvertible,
   rebasesRestOverLeadingParameters,
   dictionaryCastableToDictionary,
+  dictionaryViewableAsDictionary,
+  VIEWED_DICTIONARY_MATERIALIZER,
   CONSTRUCTOR_STATIC_VIEW,
   constructorStaticViewAdmitted,
   DYNAMIC_DICTIONARY_TO_NAMED_RECORD,
@@ -2437,6 +2439,21 @@ const cppConversionTables = (
           allocates: true,
           ...viewProtocolOf(view)
         }
+      }
+      // A dictionary whose VALUES only a record view carries, optionally
+      // stored into an optional slot (`Pose.materials?`): rendered by
+      // `viewedDictionaryText` from the identical plan, so this existence
+      // check and the printer cannot disagree about which pairs rebuild.
+      const viewedInto = target.kind === 'optional' ? target.payload : target
+      if (source.kind === 'dictionary' && viewedInto.kind === 'dictionary') {
+        const valueView = dictionaryViewableAsDictionary(layouts, source, viewedInto)
+        if (valueView !== null)
+          return {
+            id: VIEWED_DICTIONARY_MATERIALIZER,
+            domain: 'static:dictionary-values-view',
+            allocates: true,
+            ...viewProtocolOf(valueView)
+          }
       }
       // A callable whose parameter reaches the source's only through a record
       // view (`emit-narrowing.ts`'s `VIEW_ADAPTED_CALLABLE`): the chain's own

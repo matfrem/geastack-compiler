@@ -356,6 +356,26 @@ const collectInterfaceFamilyGroups = (checker: ts.TypeChecker, files: readonly t
     }
     return family
   }
+  // The interface a lone-family adoption would name, without minting anything.
+  const loneCandidateOf = (type: ts.Type): ts.InterfaceDeclaration | null => {
+    const symbol = type.getSymbol()
+    const canonical = symbol ? canonicalOf(symbol) : null
+    if (canonical === null || !candidates.has(canonical) || tainted.has(canonical) || familyOfDeclaration.has(canonical)) return null
+    return canonical.typeParameters !== undefined || type.isClassOrInterface() === false ? null : canonical
+  }
+  // An interface an intersection adds fields to IS laid out with them -- one
+  // object, one struct, exactly as an `extends` family would be -- so it becomes
+  // a family of one that `familyOfType` then answers. Called only at the point
+  // the absorption is certain: a lone interface nothing adds fields to keeps
+  // its own layout, as before.
+  const promoteLone = (declaration: ts.InterfaceDeclaration): InterfaceFamilyGroup => {
+    const existing = familyOfDeclaration.get(declaration)
+    if (existing) return existing
+    const family: InterfaceFamilyGroup = { members: [declaration], absorbed: [], excess: new Map() }
+    families.push(family)
+    familyOfDeclaration.set(declaration, family)
+    return family
+  }
   const memberKeys = new Map<InterfaceFamilyGroup, ReadonlySet<string>>()
   const memberKeysOf = (family: InterfaceFamilyGroup): ReadonlySet<string> => {
     let found = memberKeys.get(family)
@@ -380,7 +400,7 @@ const collectInterfaceFamilyGroups = (checker: ts.TypeChecker, files: readonly t
     const source = type.aliasTypeArguments?.[0]
     return alias && source && keyRemappingAliases.has(alias.getName()) && isLibAlias(alias) ? familyThroughAliasOf(source) : null
   }
-  absorbIntersectionParts(checker, files, familyThroughAliasOf, memberKeysOf)
+  absorbIntersectionParts(checker, files, familyThroughAliasOf, memberKeysOf, loneCandidateOf, promoteLone)
   const keysOf = (family: InterfaceFamilyGroup): ReadonlySet<string> => {
     const keys = new Set(memberKeysOf(family))
     for (const absorbed of family.absorbed) for (const property of checker.getPropertiesOfType(absorbed)) keys.add(property.getName())
@@ -551,36 +571,62 @@ const absorbIntersectionParts = (
   checker: ts.TypeChecker,
   files: readonly ts.SourceFile[],
   familyOfType: (type: ts.Type) => InterfaceFamilyGroup | null,
-  memberKeysOf: (family: InterfaceFamilyGroup) => ReadonlySet<string>
+  memberKeysOf: (family: InterfaceFamilyGroup) => ReadonlySet<string>,
+  loneCandidateOf: (type: ts.Type) => ts.InterfaceDeclaration | null,
+  promoteLone: (declaration: ts.InterfaceDeclaration) => InterfaceFamilyGroup
 ): void => {
   const visit = (node: ts.Node): void => {
     if (ts.isIntersectionTypeNode(node)) {
       const type = checker.getTypeFromTypeNode(node)
       if (type.isIntersection()) {
         let family: InterfaceFamilyGroup | null = null
+        let lone: ts.InterfaceDeclaration | null = null
         const literals: ts.Type[] = []
         let admissible = true
         for (const part of type.types) {
           const own = familyOfType(part)
+          const alone = own === null ? loneCandidateOf(part) : null
           if (own) {
             if (family !== null && family !== own) admissible = false
             family = own
+          } else if (alone !== null) {
+            if (lone !== null && lone !== alone) admissible = false
+            lone = alone
           } else if (isSourceObjectLiteral(checker, part)) literals.push(part)
           else admissible = false
+        }
+        // A family already named wins; a lone interface beside it is a second
+        // base the intersection cannot be one object of.
+        if (family !== null && lone !== null) admissible = false
+        if (family === null && lone !== null && admissible && literals.length > 0) {
+          const declaration = lone
+          const symbol = checker.getSymbolAtLocation(declaration.name)
+          const declared = symbol
+            ? new Set(checker.getPropertiesOfType(checker.getDeclaredTypeOfSymbol(symbol)).map((property) => property.getName()))
+            : null
+          const adds = literals.some((literal) =>
+            checker.getPropertiesOfType(literal).some((property) => declared?.has(property.getName()) !== true)
+          )
+          if (adds) family = promoteLone(declaration)
         }
         // A key the family already lays out may be restated required
         // (mongodb's `InternalAbstractCursorOptions` = `Omit<AbstractCursorOptions,
         // 'readPreference'> & { readPreference: ReadPreference; exhaust?: boolean
         // }`); only a key the literal ADDS must be optional.
         const members = family === null ? null : memberKeysOf(family)
-        const addsOnlyOptional = (literal: ts.Type): boolean => {
+        const addsOnlyStorage = (literal: ts.Type): boolean => {
           const properties = checker.getPropertiesOfType(literal)
           return (
             properties.length > 0 &&
-            properties.every((property) => members?.has(property.getName()) === true || (property.flags & ts.SymbolFlags.Optional) !== 0)
+            properties.every(
+              (property) =>
+                members?.has(property.getName()) === true ||
+                (property.flags & ts.SymbolFlags.Optional) !== 0 ||
+                (property.flags & ts.SymbolFlags.Property) !== 0
+            )
           )
         }
-        if (admissible && family !== null && literals.every(addsOnlyOptional)) {
+        if (admissible && family !== null && literals.every(addsOnlyStorage)) {
           const absorbed = family.absorbed as ts.Type[]
           for (const literal of literals) if (!absorbed.includes(literal)) absorbed.push(literal)
         }

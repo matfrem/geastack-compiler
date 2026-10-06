@@ -1463,6 +1463,15 @@ export const createLayoutTypeResolver = (
     if (!ts.isObjectLiteralExpression(node)) return false
     const declarations = candidate.getSymbol()?.declarations ?? []
     if (declarations.length === 0 || !declarations.every((declaration) => declaration.getSourceFile().hasNoDefaultLib)) return false
+    // `Record<K, V>`, `Partial<T>` and the other mapped types are declared in
+    // the lib, but a mapped type states no storage of its own: every member it
+    // has is the type ARGUMENT's, which the program declared. Treating it as a
+    // lib protocol made `Record<'nest' | 'pond', Def>` lose to the literal's
+    // inferred type whenever `Def` was wider than the literal (an optional
+    // field one array level down was enough), and each property then had to
+    // convert from the declared `Def` into the literal's own anonymous record.
+    if ((candidate.flags & ts.TypeFlags.Object) !== 0 && ((candidate as ts.ObjectType).objectFlags & ts.ObjectFlags.Mapped) !== 0)
+      return false
     const members = candidate.getProperties()
     if (members.length === 0) return false
     const mine = own.getProperties()

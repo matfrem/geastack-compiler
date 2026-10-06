@@ -53,7 +53,7 @@ asserted-arm-into-interface-slot.ts.cpp 942cd5b29c7f
 asserted-arrow-drops-optional-parameter-and-narrows-result.runtime.ts.cpp cbbb958a376d
 asserted-union-arm-is-checked-not-read-unchecked.runtime.ts.cpp d933e976c015
 asserted-union-of-classes-into-interface-view.runtime.ts.cpp babc4a99c69a
-assign-copies-only-keys-the-sources-hold.runtime.ts.cpp e4e9936f8b06
+assign-copies-only-keys-the-sources-hold.runtime.ts.cpp 062ca1058bb5
 assign-for-in-generic.ts.cpp d39f9701a2c8
 async-dropped-promise-reactions.runtime.ts.cpp 9936b5b6bf02
 async-function-throw-rejects.ts.cpp 4d484c71ef75
@@ -270,6 +270,7 @@ dictionary-index-optional-destination.ts.cpp 032fe2284c2b
 dictionary-index-truthiness.ts.cpp 30a4adeec165
 dictionary-named-absence.ts.cpp 59505c67b3d6
 dictionary-or-any-union-computed-read.runtime.ts.cpp 91cba1b7724c
+dictionary-values-record-view.ts.cpp 11450b6e640b
 direct-interface-method-receiver.ts.cpp 3bae9166330f
 dispatched-getter-read-enters-optional-chain-result.runtime.ts.cpp 18d0182240ed
 document-literal-define-and-spread-copy-keep-order.runtime.ts.cpp a7ee3d071e17
@@ -556,6 +557,7 @@ interface-slot-written-only-by-classes-keeps-identity.runtime.ts.cpp b931f90d88e
 interface-union-this-typed-method-field.ts.cpp 64d9ebbdff05
 interface-with-several-implementors.ts.cpp 709ecc988222
 intersection-field-reduces-absence-and-subclass.runtime.ts.cpp 0fb110759177
+intersection-identity-upcast.ts.cpp 9851dbcd52d8
 intersection-of-union-substitution.ts.cpp 2a9128d9caf0
 intrinsic-callback-parameter-wider-than-element.ts.cpp 61e2c541d8ed
 invocation-argument-conversions.ts.cpp e090509efb4d
@@ -835,6 +837,7 @@ optional-formal-payload-view.ts.cpp 702b07972f52
 optional-forwarded-object.js.cpp db451ae9447c
 optional-into-dynamic-argument.ts.cpp 9d19fb219f27
 optional-map-property-logical-assign.ts.cpp 6b2bfa69f4fb
+optional-method-interface-call.ts.cpp 131f099b5f45
 optional-regexp-match-array-union.ts.cpp d7f580b46250
 optional-strict-equality.ts.cpp bfbcd8632cc5
 optional-string-keyed-map-and-set-use-same-value-zero.runtime.ts.cpp 8eab5ae2c71d
@@ -876,7 +879,7 @@ plain-object-with-class-layout-reflects-as-object.runtime.ts.cpp 32a6383f4917
 plain-regex-test-and-ascii-string-search.runtime.ts.cpp 3c67df0a9006
 populated-record-late-fields.js.cpp ccc9715a198e
 primitive-field-narrowed-to-class-is-dead.runtime.ts.cpp 52d4c29d6073
-printer-drift.txt bc28be1a7c8e
+printer-drift.txt 8331db6f8ea7
 private-names-are-not-own-properties.ts.cpp 5a904aac80af
 promise-all-array-literal-settles-into-fixed-tuple.runtime.ts.cpp ed60c96c28c7
 promise-all-over-a-generator.ts.cpp 6b335055e4de
@@ -926,13 +929,14 @@ record-attributes-constant-unless-frozen.runtime.ts.cpp 45e6607f70ed
 record-conversions-are-unit-functions.runtime.ts.cpp 71955887a7a9
 record-field-narrowed-to-buffer-is-dead.ts.cpp 2543e1de4c24
 record-index-sidecar.ts.cpp 8ff293b175bf
-record-into-ambiguous-union-parameter-keeps-identity.runtime.ts.cpp c9549f59e17a
+record-into-ambiguous-union-parameter-keeps-identity.runtime.ts.cpp e9e489dc4d34
 record-key-order-follows-insertion-after-late-optional-write.runtime.ts.cpp 996a4c405146
 record-macro-named-fields.ts.cpp f0eb90cd824b
 record-read-out-of-unknown-map-keeps-its-keys.runtime.ts.cpp 2438e3877367
 record-sidecar-key-order-object-keys.runtime.ts.cpp e58bf5ecaf25
 record-sidecar-key-order-reflection.runtime.ts.cpp fbb2f68245f3
 record-string-computed-read.runtime.js.cpp ffb7742f8808
+record-table-contextual-literal.ts.cpp 4ce386700af0
 record-trace-leaf-acyclic-holders.runtime.ts.cpp de5429de4df0
 record-trace-leaf-index-cycle.runtime.ts.cpp 040f09192563
 record-trace-leaf-index-sidecar.runtime.ts.cpp 61b5fb5a3191
@@ -1015,7 +1019,7 @@ spread-narrowed-unknown-into-literal-in-option-table.runtime.ts.cpp d16085f16a5d
 spread-narrowed-unknown-record-cast-any-into-options.runtime.ts.cpp 3622710d8255
 spread-of-null-class-reference-copies-nothing.runtime.ts.cpp 3db9e0a56583
 spread-of-unreflected-record-keeps-creation-order.runtime.ts.cpp 52689780a129
-spread-open-document-into-closed-options.ts.cpp d7a6c79a4676
+spread-open-document-into-closed-options.ts.cpp 2b6a65b8a95f
 spread-open-headers-returned-in-literal.ts.cpp bbe51e9b431b
 spread-pended-source-ranks-and-prefix-dedupe.runtime.ts.cpp 8cd9187104c4
 spread-read-only-copy-elided-semantics.runtime.ts.cpp b9b6bb19f5f4

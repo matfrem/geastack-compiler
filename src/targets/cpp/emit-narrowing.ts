@@ -54,7 +54,7 @@ import {
   constructorDispatchFamilyText,
   constructorIdentityFamilyText
 } from './emit-constructor-identity-family.js'
-import { recordViewDispatchesArms } from '../../conversion/record-view.js'
+import { recordViewDispatchesArms, type RecordViewPlan } from '../../conversion/record-view.js'
 import {
   createCppEmitBlockedError,
   cppConstructThunkName,
@@ -2517,6 +2517,22 @@ const recastedDictionaryText = (
   if (!dictionaryCastableToDictionary(source, target)) return null
   const converted = convertedValueText(source.value, target.value, 'gea_entry.second')
   if (converted === null) return null
+  return rebuiltDictionaryText(source, target, text, converted)
+}
+
+/**
+ * The copy a dictionary recast performs, given the text that converts one
+ * entry's value. Shared by the two ways a value can reach the target's value
+ * carrier -- the ctx-free chain (`recastedDictionaryText`) and a record view
+ * that needs the layouts (`viewedDictionaryText`) -- so they cannot disagree
+ * about order, ownership or the entry storage.
+ */
+const rebuiltDictionaryText = (
+  source: Extract<Representation, { kind: 'dictionary' }>,
+  target: Extract<Representation, { kind: 'dictionary' }>,
+  text: string,
+  converted: string
+): string => {
   const storage = `gea::${target.key === 'number' ? 'NumericDictionary' : 'Dictionary'}<${cppTypeOf(target.value)}>`
   const construct = target.ownership === 'shared-refcount' ? `auto gea_dict = gea::makeRef<${storage}>();` : `${storage} gea_dict{};`
   const dictArrow = target.ownership === 'shared-refcount' ? '->' : '.'
@@ -2529,6 +2545,48 @@ const recastedDictionaryText = (
     `for (const auto& gea_entry : ${range}) { gea_dict${dictArrow}operator[](gea_entry.first) = ${converted}; } ` +
     `return gea_dict; }(${text})`
   )
+}
+
+/** The materializer id of a dictionary whose values reach the target's through a record view. */
+export const VIEWED_DICTIONARY_MATERIALIZER = 'view:dictionary-values'
+
+/**
+ * Whether `source` becomes `target` by rebuilding each value as a record view
+ * of the target's value shape, when no ctx-free chain converts a value.
+ *
+ * `Object.fromEntries(names.map((n) => [n, { visible: true }]))` is a
+ * dictionary of the literal's own anonymous records, and the slot it fills
+ * declares `Record<string, NodePose>`, whose value is the named interface. The
+ * pair of VALUES is exactly the pair a lone `{ visible: true }` stored into a
+ * `NodePose` cell already converts through (`viewPlanFor`); only the container
+ * around them had no way to ask. Same copy-and-convert rebuild
+ * `dictionaryCastableToDictionary` already admits for scalar values, for the
+ * same reason: the entries are re-inserted in creation order.
+ *
+ * Excluded when `dictionaryCastableToDictionary` already answers the pair, so
+ * a pair that rebuilt before keeps its recipe and its text.
+ */
+export const dictionaryViewableAsDictionary = (
+  layouts: RecordLayoutPolicy,
+  source: Extract<Representation, { kind: 'dictionary' }>,
+  target: Extract<Representation, { kind: 'dictionary' }>
+): RecordViewPlan | null => {
+  if (source.key !== target.key || (source.key !== 'string' && source.key !== 'number')) return null
+  if (representationKey(source.value) === representationKey(target.value)) return null
+  if (containsUnresolved(source) || containsUnresolved(target)) return null
+  if (dictionaryCastableToDictionary(source, target)) return null
+  return viewPlanFor(layouts, source.value, target.value)
+}
+
+export const viewedDictionaryText = (
+  ctx: ConversionSite,
+  source: Extract<Representation, { kind: 'dictionary' }>,
+  target: Extract<Representation, { kind: 'dictionary' }>,
+  text: string
+): string | null => {
+  if (dictionaryViewableAsDictionary(ctx.layouts, source, target) === null) return null
+  const converted = structuralRecordViewText(ctx, source.value, target.value, 'gea_entry.second')
+  return converted === null ? null : rebuiltDictionaryText(source, target, text, converted)
 }
 
 /**
@@ -3390,12 +3448,17 @@ export const receiverBoundFieldText = (
   receiver: Representation,
   receiverText: string
 ): string | null => {
-  if (!bindsReceiver(stored, published)) return null
+  // An optional method (`start?(): void`) publishes `optional(callable)`: the
+  // value the read hands back is present whenever this body exists, so the
+  // receiver binds into the callable and the optional wraps the result.
+  const callable = published.kind === 'optional' ? published.payload : published
+  if (!bindsReceiver(stored, callable)) return null
   const abi = callableObjectAbi(stored)
   if (abi === null || abi.receiver === null) return null
   const bound = alignedValueText(ctx, 'emit-narrowing.ts:receiver-bound-field', receiver, abi.receiver, receiverText)
   if (bound === null) return null
-  return `${cppTypeOf(published)}::bindReceiver(${storedText}, ${bound})`
+  const bindText = `${cppTypeOf(callable)}::bindReceiver(${storedText}, ${bound})`
+  return callable === published ? bindText : `${cppTypeOf(published)}{${bindText}}`
 }
 
 export const bindsReceiver = (source: Representation, target: Representation): boolean => {
@@ -5304,6 +5367,17 @@ const renderedRecipeText = (ctx: ConversionSite, node: ConversionNode, text: str
     return assertedUnionText(node.source, node.target, text, false)
   if (node.capability.kind === 'static' && node.capability.materializer.id === ASSERTED_UNION_COPY_MATERIALIZER)
     return assertedUnionText(node.source, node.target, text, true)
+  if (
+    node.capability.kind === 'static' &&
+    node.capability.materializer.id === VIEWED_DICTIONARY_MATERIALIZER &&
+    node.source.kind === 'dictionary'
+  ) {
+    const into = node.target.kind === 'optional' ? node.target.payload : node.target
+    if (into.kind !== 'dictionary') return null
+    const rebuilt = viewedDictionaryText(ctx, node.source, into, text)
+    if (rebuilt === null || node.target.kind !== 'optional') return rebuilt
+    return `${cppTypeOf(node.target)}{${cppTypeOf(into)}{${rebuilt}}}`
+  }
   // The census's per-arm view (`nodes.ts`'s `armViewFor`).
   if (node.capability.kind === 'static' && node.capability.materializer.id === ARM_VIEW_MATERIALIZER)
     return armViewText(node.source, node.target, text)

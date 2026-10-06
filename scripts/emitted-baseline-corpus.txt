@@ -157,7 +157,7 @@ typed-array-intersection-carrier.ts.cpp 9cc4b1a7377d
 typed-array-pcm-map.ts.cpp b3ca20e824c3
 typeof-narrowed-union-field-store.js.cpp 4c48208fb889
 typeof-narrowed-union-field-store.ts.cpp d0d2faf37170
-uncertified.txt e7c4c8221065
+uncertified.txt a2e55c714c04
 uniform-value-union.ts.cpp 40b00c7ccc98
 uninhabited-intersection-branch.ts.cpp 9e2b4097edb1
 uninstantiated-generic.ts.cpp 1621e1aebca3
