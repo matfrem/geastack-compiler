@@ -466,6 +466,7 @@ const lowerBinding = (ctx: LoweringContext, block: IrBlockId, operation: Binding
       // Only a `let` (a `var` is hoisted and `var x;` does not reset it) whose carrier has a place for `undefined`: any
       // other must be assigned before it is read, so no stale value is visible.
       if (!(operation.mutable && operation.temporalDeadZone) || operation.commonJs || operation.external) return
+      if (ctx.program.capturedBindings.has(operation.declaration)) return
       const lineage = requireLineage(operation)
       const representation = requireResultRepresentation(ctx, operation, 'value', 'a binding declaration')
       if (!carrierAdmitsUndefined(representation)) return
@@ -1615,6 +1616,23 @@ const perIterationRenewalsOf = (graph: SemanticGraph): ReadonlyMap<OperationId, 
   return renewals
 }
 
+/** See `LoweringProgram.capturedBindings`. One pass over the graph. */
+const capturedBindingsOf = (graph: SemanticGraph): ReadonlySet<DeclarationId> => {
+  const home = new Map<DeclarationId, string>()
+  for (const operation of graph.operations.values())
+    if (operation.family === 'binding' && (operation.action === 'declare' || operation.action === 'initialize'))
+      home.set(operation.declaration, callerKeyOf(operation.caller))
+  const captured = new Set<DeclarationId>()
+  for (const operation of graph.operations.values()) {
+    const declaration =
+      operation.family === 'binding' ? operation.declaration : operation.family === 'property' ? operation.resolvedBinding : undefined
+    if (declaration === undefined) continue
+    const owner = home.get(declaration)
+    if (owner !== undefined && callerKeyOf(operation.caller) !== owner) captured.add(declaration)
+  }
+  return captured
+}
+
 export const lowerToIr = (input: IrLoweringInput): IrLoweringResult => {
   const constantDeriver = input.deriver
   const reactiveFields = mergedReactiveClassFields(input.plugins)
@@ -1631,7 +1649,8 @@ export const lowerToIr = (input: IrLoweringInput): IrLoweringResult => {
     methodValueReceivers: new Map(),
     reactiveFields,
     reactiveFieldDeclarations: reactiveFieldDeclarationsOf(input.classes, reactiveFields),
-    perIterationRenewals: perIterationRenewalsOf(input.graph)
+    perIterationRenewals: perIterationRenewalsOf(input.graph),
+    capturedBindings: capturedBindingsOf(input.graph)
   }
   const groups = groupOperationsByOwner(input.graph)
   const bodies = new Map<PhysicalBodyId, IrBody>()

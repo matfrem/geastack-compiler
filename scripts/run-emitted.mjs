@@ -180,6 +180,12 @@ if (ran.signal) {
   console.error(`CRASHED: ${ran.signal}`)
   process.exit(1)
 }
+// Windows has no signals: an abort() is exit code 3 under the C runtime, and a fault or a failed fast-fail check is an
+// NTSTATUS (0xC0000005 access violation, 0xC0000409 stack-buffer-overrun/fast-fail). Both are crashes in the sense above.
+if (process.platform === 'win32' && ran.status !== null && (ran.status === 3 || ran.status >>> 0 >= 0xc0000000)) {
+  console.error(`CRASHED: exit code 0x${(ran.status >>> 0).toString(16)}`)
+  process.exit(1)
+}
 if (ran.status !== 0) {
   console.error(`EXITED ${ran.status}`)
   process.exit(1)

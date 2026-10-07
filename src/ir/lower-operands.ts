@@ -110,6 +110,11 @@ export interface LoweringProgram {
    * left out: renewing a cell only this frame holds is unobservable.
    */
   readonly perIterationRenewals: ReadonlyMap<OperationId, readonly PerIterationRenewal[]>
+  /**
+   * The bindings a callable other than the one that declares them reads or writes. Their cells live in a frame or a
+   * box the capture analysis lays out, not among the declaring body's locals, so what places a local does not apply.
+   */
+  readonly capturedBindings: ReadonlySet<DeclarationId>
 }
 
 export interface PerIterationRenewal {
