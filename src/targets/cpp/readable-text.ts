@@ -484,3 +484,26 @@ export const mergeDeclarations = (text: string): string => {
   }
   return removed.size === 0 ? text : lines.filter((_, index) => !removed.has(index)).join('\n')
 }
+
+/**
+ * A function that writes a source file's path relative to the directory the program's own files share, with
+ * forward slashes: `src/ai/jardinouAI.ts`. Files under `node_modules` and the compiler's library files do not
+ * count towards that directory. Display only.
+ */
+export const displayPathsOf = (files: readonly string[]): ((file: string) => string) => {
+  const normalized = files
+    .map((file) => file.split('\\').join('/'))
+    .filter((file) => !file.includes('/node_modules/') && !file.includes('/typescript/lib/'))
+  const directories = normalized.map((file) => file.split('/').slice(0, -1))
+  let common = directories[0] ?? []
+  for (const directory of directories) {
+    let shared = 0
+    while (shared < common.length && shared < directory.length && common[shared] === directory[shared]) shared += 1
+    common = common.slice(0, shared)
+  }
+  const root = common.length === 0 ? '' : `${common.join('/')}/`
+  return (file) => {
+    const path = file.split('\\').join('/')
+    return root !== '' && path.startsWith(root) ? path.slice(root.length) : path
+  }
+}

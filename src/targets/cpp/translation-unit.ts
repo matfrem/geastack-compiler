@@ -17,6 +17,7 @@ import { keyOrderObservationOf, nothingProvenUnobserved } from '../../ir/key-ord
 import { nativeOrdinaryConstructInstanceMatches } from '../../ir/construct-entry.js'
 import type { CapabilityCertificate } from '../../ir/certificate.js'
 import type { CapabilityKey } from '../../ir/certify.js'
+import type { DiagnosticLocation } from '../../diagnostics/model.js'
 import type { SealedRepresentationPlan } from '../../representation/plan.js'
 import {
   declarationOfFunction,
@@ -46,6 +47,7 @@ import {
   dropDefaultedAttributes,
   foldDoubleCasts,
   foldThrowHelpers,
+  displayPathsOf,
   indentBlocks,
   mergeDeclarations,
   nameBodyBindings,
@@ -425,6 +427,8 @@ export interface CppTranslationUnitInput {
    * function: one cell for the whole call, whichever loop writes it. A body declares each at the top.
    */
   readonly hoistedBindings: ReadonlySet<DeclarationId>
+  /** Where a declaration is in the source (`FrontendResult.locationOfDeclaration`); written above each body as a comment under `shortNames`. Display only. */
+  readonly locationOfDeclaration: (declaration: DeclarationId) => DiagnosticLocation | null
   /** Parameter names by callable (`FrontendResult.parameterNames`), spelled over `gea_arg_N` where nothing in the body already uses the name. */
   readonly parameterNames: ReadonlyMap<DeclarationId, readonly (string | null)[]>
   /** Variable names of anonymous object shapes (`FrontendResult.shapeNames`), the fallback name of a record no declaration names. */
@@ -2913,6 +2917,7 @@ const renderTranslationUnitSession = (input: CppTranslationUnitInput): CppTransl
   // Rendering first is the whole of the reordering: each body's artifacts keep
   // their own facts and their own order.
   const renderedBodies: RenderedBody[] = []
+  const sourcePath = displayPathsOf([...input.sourceFileNames.values()])
   // The parameter names a body's texts may use, when a build asked for them. Applied to ONE body's
   // texts at a time because `gea_arg_N` means a different parameter in every body.
   const namedParameters = (
@@ -2930,7 +2935,12 @@ const renderTranslationUnitSession = (input: CppTranslationUnitInput): CppTransl
       texts.map(abbreviateTypeSpellings),
       new Map([...bindingNames].map(([declaration, cell]) => [cell, input.declarationNames.get(declaration) ?? null]))
     )
-    return artifacts.map((artifact, index) => (texts[index] === artifact.text ? artifact : { ...artifact, text: texts[index] as string }))
+    const renamed = artifacts.map((artifact, index) =>
+      texts[index] === artifact.text ? artifact : { ...artifact, text: texts[index] as string }
+    )
+    // Where the function is in the source, above its signature, so the C++ can be read against the TypeScript.
+    const location = isRegionId(body.sourceOwner) ? null : input.locationOfDeclaration(declarationOfFunction(body.sourceOwner))
+    return location === null ? renamed : [plain(`// ${sourcePath(location.file)}:${location.line}`), ...renamed]
   }
   for (const body of input.bodies) {
     // A body's statements are not a translation unit on their own: they need a
