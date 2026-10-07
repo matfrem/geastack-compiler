@@ -52,23 +52,29 @@ pair, moved-from slots left behind, tombstones, batch operations. Review `ArrayO
 `NumericDictionary`, `SymbolDictionary`, the iterators, `Optional<Ref<T>>`, and how `Ref` copies and releases are spelled
 in generated code. Map and Set are done (hash index `ae20a74`, O(1) removal `fefdb3c`).
 
-## 3. Proposed, to confirm with the user when reached
+## 3. Confirmed in advance by the user: do them without asking
+
+In this order, after sections 1 and 2. The gate baselines (old item 6) are *not* in this list: see "Postponed".
 
 1. **Portability of `gea_runtime.h`**: `std::regex_constants::multiline` is missing from VS2022's STL, which stops
    `scripts/check-runtime-header.mjs` and the runtime suite on this machine. A feature test around it. (Small; also lets
    the harness drop its shim.)
-2. **Report to the main repo**: the `let`/`var` fixes (`9abd76d`, `b62b855`) are written up as a bug report; the user sends it.
+2. **Report to the main repo**: nothing to do. The `let`/`var` fixes (`9abd76d`, `b62b855`) are written up as a bug report and the user sends it.
 3. **Cold code**: `[[gnu::cold]]` / `noinline` on module-initialisation bodies and error paths. Measure `-O1` on one
    file first; the backend is 67 of 77 s of a Bioustopia build, 35 s of it in the inliner.
 4. **Per-field `gea_present_x` / `gea_attributes_x`** (about 26% of the output's bytes): omit them for a field the
    program never deletes, redefines or freezes. The `fieldOperations` reflection demand already says which.
 5. **Names**: the ~535 still-anonymous bodies, the ~113 anonymous records, source-location comments above classes.
-6. **Gate baselines** are stale in this environment (every program "moves" on a clean HEAD): find out why (line endings,
-   paths, TypeScript version) and re-take them from a tree where that is true.
-7. **Game-side compiler gaps** seen in the working tree of `C:\Work\BioustopiaCpp` (`ojs/level/levelFile.ts`,
+6. **Game-side compiler gaps** seen in the working tree of `C:\Work\BioustopiaCpp` (`ojs/level/levelFile.ts`,
    `ojs/save/slots.ts`): `JSON.stringify(record, null, 1)` ("replacer support requires a string or genuinely dynamic
    input") and an optional method read as a value (`this.cfg.savedAt?.(data)`) are refused.
-8. **Fix `var` declared in a function with a `switch`/try region** if the pinned-scope fix is ever found not to reach the
+7. **Fix `var` declared in a function with a `switch`/try region** if the pinned-scope fix is ever found not to reach the
    region layout (`regionScopedBlocksOf` passes `pinned`, but no test covers it).
-9. **Tests for the `--short-names` passes** (`readable-text.ts`, `identifier-names.ts`, `emit-loops.ts`) as unit tests
+8. **Tests for the `--short-names` passes** (`readable-text.ts`, `identifier-names.ts`, `emit-loops.ts`) as unit tests
    next to the code, so they do not depend on the Bioustopia snapshot.
+
+## Postponed (user: "on verra après")
+
+- **Gate baselines** are stale in this environment (every program "moves" on a clean HEAD, 168 of 168 corpus programs):
+  find out why (line endings, paths, TypeScript version) and re-take them from a tree where that is true. Do not run
+  `npm run gate -- --write` here before that is understood.
