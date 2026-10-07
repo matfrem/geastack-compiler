@@ -1276,12 +1276,6 @@ export const jsonCallText = (ctx: EmitContext, member: 'stringify' | 'parse', op
     }
     const valueText = operandText(ctx, argument)
     if (operation.arguments.length > 1) {
-      if (argument.representation.kind !== 'string' && argument.representation.kind !== 'dynamic') {
-        throw createCppEmitBlockedError(
-          'host-member-call:JSON.stringify',
-          `JSON.stringify replacer support requires a string or genuinely dynamic input and this call carries "${representationKey(argument.representation)}"`
-        )
-      }
       const replacer = operation.arguments[1] as IrOperand
       const leaves: Array<{ readonly condition: string; readonly text: string; readonly representation: Representation }> = []
       const collect = (representation: Representation, text: string, conditions: readonly string[]): void => {
@@ -1310,9 +1304,6 @@ export const jsonCallText = (ctx: EmitContext, member: 'stringify' | 'parse', op
           `JSON.stringify replacer carries "${representationKey(replacer.representation)}"; expected null, undefined, a property-list array, or one callable arm`
         )
       }
-      if (callable.length === 0) {
-        return `[&]() { std::string gea_json_out; gea_json_write(gea_json_out, ${valueText}); return gea_json_out; }()`
-      }
       const space = operation.arguments[2]
       const gapText = (representation: Representation, text: string): string => {
         if (representation.kind === 'undefined' || representation.kind === 'null') return 'std::string()'
@@ -1332,9 +1323,22 @@ export const jsonCallText = (ctx: EmitContext, member: 'stringify' | 'parse', op
         )
       }
       const gap = space === undefined ? 'std::string()' : gapText(space.representation, '__gea_space')
+      const spaceBinding = space === undefined ? '' : `const auto& __gea_space = ${operandText(ctx, space)};`
+      if (callable.length === 0) {
+        // No callable replacer: the typed writer's compact text is the answer, laid out by `space` afterwards.
+        const compact = `std::string gea_json_out; gea_json_write(gea_json_out, ${valueText}); `
+        return space === undefined
+          ? `[&]() { ${compact}return gea_json_out; }()`
+          : `([&]() { ${spaceBinding} ${compact}return gea::json::reindent(gea_json_out, ${gap}); })()`
+      }
+      if (argument.representation.kind !== 'string' && argument.representation.kind !== 'dynamic') {
+        throw createCppEmitBlockedError(
+          'host-member-call:JSON.stringify',
+          `JSON.stringify replacer support requires a string or genuinely dynamic input and this call carries "${representationKey(argument.representation)}"`
+        )
+      }
       const selected = callable[0] as (typeof callable)[number]
       const callableRepresentation = selected.representation as Extract<Representation, { readonly kind: 'function-value-dispatch' }>
-      const spaceBinding = space === undefined ? '' : `const auto& __gea_space = ${operandText(ctx, space)};`
       // A statically known string is the original specialized path. A
       // genuinely dynamic value already IS the boxed boundary JSON's callback
       // contract requires, so pass it through untouched. Extending this to a

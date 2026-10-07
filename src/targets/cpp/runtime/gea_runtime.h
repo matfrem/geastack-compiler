@@ -42001,6 +42001,58 @@ inline void appendJsonIndent(std::string& out, const std::string& gap, std::size
   for (std::size_t at = 0; at < depth; ++at) out += gap;
 }
 
+/** The compact text `gea_json_write` produced, laid out the way JSON.stringify's `space` argument asks (empty `{}` and `[]` stay compact). */
+inline std::string reindent(const std::string& compact, const std::string& gap) {
+  if (gap.empty()) return compact;
+  std::string out;
+  out.reserve(compact.size() * 2);
+  std::size_t depth = 0;
+  bool inString = false;
+  for (std::size_t at = 0; at < compact.size(); ++at) {
+    const char c = compact[at];
+    if (inString) {
+      out += c;
+      if (c == '\\' && at + 1 < compact.size()) out += compact[++at];
+      else if (c == '"') inString = false;
+      continue;
+    }
+    switch (c) {
+      case '"':
+        inString = true;
+        out += c;
+        break;
+      case '{':
+      case '[':
+        out += c;
+        if (at + 1 < compact.size() && (compact[at + 1] == '}' || compact[at + 1] == ']')) {
+          out += compact[++at];
+          break;
+        }
+        ++depth;
+        out += '\n';
+        appendJsonIndent(out, gap, depth);
+        break;
+      case '}':
+      case ']':
+        --depth;
+        out += '\n';
+        appendJsonIndent(out, gap, depth);
+        out += c;
+        break;
+      case ',':
+        out += ",\n";
+        appendJsonIndent(out, gap, depth);
+        break;
+      case ':':
+        out += ": ";
+        break;
+      default:
+        out += c;
+    }
+  }
+  return out;
+}
+
 /**
  * Serialize a genuinely dynamic replacer result. `holder` is the object used
  * as the callback's `this`; arrays substitute null for an omitted element,
