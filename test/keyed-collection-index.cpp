@@ -70,12 +70,45 @@ int main() {
         auto got = m.get(key);
         CHECK(got.has_value() == r.has(key));
       }
+      CHECK(m.size() == static_cast<double>(r.e.size()));
+      if (step % 1000 == 999) {
+        // walk by cursor, which is how a Map Iterator reads, and compare with the reference order
+        std::uint64_t serial = 0;
+        size_t at = 0;
+        while (const auto* entry = m.entryAfter(serial)) {
+          CHECK(at < r.e.size() && entry->first == r.e[at].first && entry->second == r.e[at].second);
+          ++at;
+        }
+        CHECK(at == r.e.size());
+      }
     }
     same(m, r);
     m.clear();
     CHECK(m.size() == 0);
     for (int i = 0; i < 40; ++i) m.set("a" + std::to_string(i), i);
     CHECK(m.has("a39") && m.size() == 40);
+  }
+  // delete-heavy: empty a large map through a cursor, re-add some keys, and read it back dense
+  {
+    gea::Map<std::string, int> m;
+    for (int i = 0; i < 500; ++i) m.set("m" + std::to_string(i), i);
+    std::uint64_t serial = 0;
+    int visited = 0;
+    while (const auto* entry = m.entryAfter(serial)) {
+      std::string key = entry->first;  // copy out before stepping, as a cursor does
+      CHECK(m.remove(key));
+      ++visited;
+    }
+    CHECK(visited == 500 && m.size() == 0 && m.entries().empty());
+    for (int i = 0; i < 100; ++i) m.set("m" + std::to_string(i * 3), i);
+    CHECK(m.size() == 100 && m.entries().size() == 100 && m.entries()[0].first == "m0" && m.entries()[99].first == "m297");
+    CHECK(!m.has("m1") && m.has("m3"));
+    gea::Set<double> s;
+    for (int i = 0; i < 200; ++i) s.add(static_cast<double>(i));
+    for (int i = 0; i < 200; i += 2) CHECK(s.remove(static_cast<double>(i)));
+    CHECK(s.size() == 100 && s.items().size() == 100 && s.items()[0] == 1.0 && s.items()[99] == 199.0);
+    s.add(0.0);
+    CHECK(s.size() == 101 && s.has(0.0) && s.items().back() == 0.0);
   }
   // number keys: -0 and 0 are one key, NaN equals NaN, order kept
   {

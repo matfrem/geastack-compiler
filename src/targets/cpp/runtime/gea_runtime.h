@@ -11483,9 +11483,20 @@ inline constexpr std::size_t keyedAbsent = static_cast<std::size_t>(-1);
 struct KeyedIndex {
   std::unordered_multimap<std::size_t, std::uint64_t> byHash;
   bool built = false;
+  /**
+   * A removal from an indexed collection leaves its slot behind, marked here, instead of shifting every later
+   * entry down: it is the only way a removal can stay O(1). Empty until the first removal, and then parallel to
+   * the collection's storage. The serial of a dead slot stays in place, so the serial list keeps the order the
+   * binary searches rely on; the slot holds only moved-from values and is dropped by `compactKeyed`.
+   */
+  std::vector<char> dead;
+  std::size_t deadCount = 0;
+  bool isDead(std::size_t position) const { return !dead.empty() && dead[position] != 0; }
   void clear() {
     byHash.clear();
     built = false;
+    dead.clear();
+    deadCount = 0;
   }
   void erase(std::size_t hash, std::uint64_t serial) {
     const auto range = byHash.equal_range(hash);
@@ -11497,6 +11508,29 @@ struct KeyedIndex {
     }
   }
 };
+
+/** Drops the dead slots of an indexed collection, keeping live entries in insertion order. The hash index keys serials, which do not move. */
+template <typename Storage>
+inline void compactKeyed(Storage& storage, std::vector<std::uint64_t>& serials, KeyedIndex& index) {
+  std::size_t kept = 0;
+  for (std::size_t position = 0; position < storage.size(); ++position) {
+    if (index.isDead(position)) continue;
+    if (kept != position) {
+      storage[kept] = std::move(storage[position]);
+      serials[kept] = serials[position];
+    }
+    ++kept;
+  }
+  storage.erase(storage.begin() + static_cast<std::ptrdiff_t>(kept), storage.end());
+  serials.erase(serials.begin() + static_cast<std::ptrdiff_t>(kept), serials.end());
+  index.dead.clear();
+  index.deadCount = 0;
+}
+
+/** Whether enough slots are dead that a pass over the storage pays for itself. */
+inline bool keyedWantsCompaction(const KeyedIndex& index, std::size_t slots) {
+  return index.deadCount >= 32 && index.deadCount * 2 >= slots;
+}
 }  // namespace detail
 
 /**
@@ -11731,7 +11765,17 @@ class Map {
     const std::size_t index = positionOf(key);
     if (index == detail::keyedAbsent) return false;
     if constexpr (valueZeroHashable<K>) {
-      if (index_.built) index_.erase(valueZeroHash(entries_[index].first), serials_[index]);
+      if (index_.built) {
+        // Leave the slot in place, dead, and drop what it held now: the entry is gone as far as the program can tell.
+        index_.erase(valueZeroHash(entries_[index].first), serials_[index]);
+        if (index_.dead.empty()) index_.dead.assign(entries_.size(), 0);
+        index_.dead[index] = 1;
+        ++index_.deadCount;
+        { [[maybe_unused]] K droppedKey = std::move(entries_[index].first); }
+        { [[maybe_unused]] V droppedValue = std::move(entries_[index].second); }
+        if (detail::keyedWantsCompaction(index_, entries_.size())) detail::compactKeyed(entries_, serials_, index_);
+        return true;
+      }
     }
     entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(index));
     serials_.erase(serials_.begin() + static_cast<std::ptrdiff_t>(index));
@@ -11764,7 +11808,8 @@ class Map {
    */
   const std::pair<K, V>* entryAfter(std::uint64_t& serial) const {
     if (view_) [[unlikely]] return view_->entryAfter(serial);
-    const auto next = std::upper_bound(serials_.begin(), serials_.end(), serial);
+    auto next = std::upper_bound(serials_.begin(), serials_.end(), serial);
+    while (next != serials_.end() && index_.isDead(static_cast<std::size_t>(next - serials_.begin()))) ++next;
     if (next == serials_.end()) return nullptr;
     serial = *next;
     return &entries_[static_cast<std::size_t>(next - serials_.begin())];
@@ -11772,11 +11817,13 @@ class Map {
   /** `double`, not `size_t`: `Map.prototype.size` is a JS number, and `cppScalarType`'s `'number'` domain is `double`. */
   double size() const {
     if (view_) [[unlikely]] return view_->size();
-    return static_cast<double>(entries_.size());
+    return static_cast<double>(entries_.size() - index_.deadCount);
   }
 
   const std::vector<std::pair<K, V>>& entries() const {
     if (view_) [[unlikely]] return view_->entries();
+    // A caller holds the whole vector, so it has to be dense: dead slots go before it is handed out.
+    if (index_.deadCount != 0) detail::compactKeyed(entries_, serials_, index_);
     return entries_;
   }
 
@@ -11813,6 +11860,7 @@ class Map {
   /** Keeps the index in step with an entry just appended, and builds it when the map first outgrows a scan. */
   void noteAppended() {
     if constexpr (valueZeroHashable<K>) {
+      if (!index_.dead.empty()) index_.dead.push_back(0);
       if (index_.built) {
         index_.byHash.emplace(valueZeroHash(entries_.back().first), serials_.back());
       } else if (entries_.size() >= detail::keyedIndexThreshold) {
@@ -11824,10 +11872,11 @@ class Map {
     }
   }
 
-  std::vector<std::pair<K, V>> entries_;
-  std::vector<std::uint64_t> serials_;
+  // Mutable because `entries()` compacts: a const read may have to drop dead slots before it hands the vector out.
+  mutable std::vector<std::pair<K, V>> entries_;
+  mutable std::vector<std::uint64_t> serials_;
   std::uint64_t nextSerial_ = 1;
-  detail::KeyedIndex index_;
+  mutable detail::KeyedIndex index_;
   std::shared_ptr<const detail::MapViewSource<K, V>> view_;
 };
 
@@ -11937,7 +11986,15 @@ class Set {
     const std::size_t index = positionOf(key);
     if (index == detail::keyedAbsent) return false;
     if constexpr (valueZeroHashable<K>) {
-      if (index_.built) index_.erase(valueZeroHash(items_[index]), serials_[index]);
+      if (index_.built) {
+        index_.erase(valueZeroHash(items_[index]), serials_[index]);
+        if (index_.dead.empty()) index_.dead.assign(items_.size(), 0);
+        index_.dead[index] = 1;
+        ++index_.deadCount;
+        { [[maybe_unused]] K dropped = std::move(items_[index]); }
+        if (detail::keyedWantsCompaction(index_, items_.size())) detail::compactKeyed(items_, serials_, index_);
+        return true;
+      }
     }
     items_.erase(items_.begin() + static_cast<std::ptrdiff_t>(index));
     serials_.erase(serials_.begin() + static_cast<std::ptrdiff_t>(index));
@@ -11949,13 +12006,17 @@ class Set {
     serials_.clear();
     index_.clear();
   }
-  double size() const { return static_cast<double>(items_.size()); }
+  double size() const { return static_cast<double>(items_.size() - index_.deadCount); }
 
-  const std::vector<K>& items() const { return items_; }
+  const std::vector<K>& items() const {
+    if (index_.deadCount != 0) detail::compactKeyed(items_, serials_, index_);
+    return items_;
+  }
 
   /** `Map::entryAfter`'s twin for the Set Iterator (ECMA-262 24.2.5.1), for the same reason. */
   const K* itemAfter(std::uint64_t& serial) const {
-    const auto next = std::upper_bound(serials_.begin(), serials_.end(), serial);
+    auto next = std::upper_bound(serials_.begin(), serials_.end(), serial);
+    while (next != serials_.end() && index_.isDead(static_cast<std::size_t>(next - serials_.begin()))) ++next;
     if (next == serials_.end()) return nullptr;
     serial = *next;
     return &items_[static_cast<std::size_t>(next - serials_.begin())];
@@ -11983,6 +12044,7 @@ class Set {
 
   void noteAppended() {
     if constexpr (valueZeroHashable<K>) {
+      if (!index_.dead.empty()) index_.dead.push_back(0);
       if (index_.built) {
         index_.byHash.emplace(valueZeroHash(items_.back()), serials_.back());
       } else if (items_.size() >= detail::keyedIndexThreshold) {
@@ -11994,10 +12056,11 @@ class Set {
     }
   }
 
-  std::vector<K> items_;
-  std::vector<std::uint64_t> serials_;
+  // Mutable for the reason `Map::entries_` is.
+  mutable std::vector<K> items_;
+  mutable std::vector<std::uint64_t> serials_;
   std::uint64_t nextSerial_ = 1;
-  detail::KeyedIndex index_;
+  mutable detail::KeyedIndex index_;
 };
 
 /**
