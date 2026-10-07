@@ -441,13 +441,40 @@ const lowerComputation = (ctx: LoweringContext, flow: FlowController, block: IrB
   registerResult(ctx, operation, ctx.builder.compute(block, lineage, operation.form, operation.operator, operands, representation))
 }
 
+/** Whether a carrier already has a place for `undefined`. */
+const carrierAdmitsUndefined = (carrier: Representation): boolean =>
+  carrier.kind === 'undefined' ||
+  carrier.kind === 'dynamic' ||
+  (carrier.kind === 'optional' && carrier.absence === 'undefined') ||
+  (carrier.kind === 'tagged-union' && carrier.arms.some((arm) => carrierAdmitsUndefined(arm.value)))
+
 const lowerBinding = (ctx: LoweringContext, block: IrBlockId, operation: BindingOperation): void => {
   switch (operation.action) {
-    case 'declare':
+    case 'declare': {
       // A binding cell coming into existence has no runtime value of its own
       // to materialize; TDZ behavior is carried on the *read* operation
       // instead (`BindingOperation.temporalDeadZone`), not on this event.
+      //
+      // Except where the statement is itself an event the program can see:
+      // `let best: T | undefined;` sets `best` to `undefined` each time it is
+      // reached (ECMA-262 14.3.1.2), and a cell is placed at the deepest scope
+      // that holds every operation naming it. With no write here, a cell written
+      // only inside a loop and read after it was placed at the loop's own scope,
+      // which a back edge leaves and re-enters -- so it was a new, empty cell on
+      // every turn and the last write was lost. The explicit store is the
+      // declaration's own mention, which keeps the cell where the `let` was.
+      // Only a `let` (a `var` is hoisted and `var x;` does not reset it) whose carrier has a place for `undefined`: any
+      // other must be assigned before it is read, so no stale value is visible.
+      if (!(operation.mutable && operation.temporalDeadZone) || operation.commonJs || operation.external) return
+      const lineage = requireLineage(operation)
+      const representation = requireResultRepresentation(ctx, operation, 'value', 'a binding declaration')
+      if (!carrierAdmitsUndefined(representation)) return
+      ctx.builder.bindingWrite(block, lineage, operation.declaration, {
+        value: ctx.builder.constant(block, lineage, 'undefined', 'undefined', representation),
+        representation
+      })
       return
+    }
     case 'read': {
       const lineage = requireLineage(operation)
       const representation = requireResultRepresentation(ctx, operation, 'value', 'a binding read')
