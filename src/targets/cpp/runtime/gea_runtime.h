@@ -11425,6 +11425,81 @@ inline bool sameValueZero(const Optional<T>& left, const Optional<T>& right) {
   return sameValueZero(*left, *right);
 }
 /**
+ * Whether a key type has a hash that agrees with `sameValueZero`: two keys that compare equal hash alike.
+ * A `Map`/`Set` over such a key builds an index once it holds more than a handful of entries; any other key
+ * type keeps the linear scan it always had, which is slower and never wrong.
+ */
+template <typename K>
+inline constexpr bool valueZeroHashable = std::is_arithmetic_v<K> || std::is_enum_v<K> || std::is_same_v<K, std::string>;
+template <typename T>
+inline constexpr bool valueZeroHashable<Ref<T>> = true;
+template <typename T>
+inline constexpr bool valueZeroHashable<Optional<T>> = valueZeroHashable<T>;
+template <typename... Arms>
+inline constexpr bool valueZeroHashable<TaggedUnion<Arms...>> = (valueZeroHashable<Arms> && ...);
+
+template <typename K>
+inline std::size_t valueZeroHash(const K& key) {
+  if constexpr (std::is_floating_point_v<K>) {
+    // NaN equals NaN and +0 equals -0 under SameValueZero, so each has one hash.
+    if (key != key) return 0x7ff8000000000000ull;
+    return key == static_cast<K>(0) ? 0 : std::hash<K>{}(key);
+  } else if constexpr (std::is_enum_v<K>) {
+    return std::hash<std::underlying_type_t<K>>{}(static_cast<std::underlying_type_t<K>>(key));
+  } else {
+    return std::hash<K>{}(key);
+  }
+}
+template <typename T>
+inline std::size_t valueZeroHash(const Ref<T>& key) {
+  return std::hash<const void*>{}(static_cast<const void*>(key.get()));
+}
+template <typename T>
+inline std::size_t valueZeroHash(const Optional<T>& key) {
+  return key.has_value() ? valueZeroHash(*key) * 31 + 1 : 0x9e3779b97f4a7c15ull;
+}
+template <typename... Arms>
+inline std::size_t valueZeroHash(const TaggedUnion<Arms...>& key) {
+  std::size_t hash = key.index() * 0x9e3779b97f4a7c15ull;
+  [&]<std::size_t... Indices>(std::index_sequence<Indices...>) {
+    ((key.template is<Indices>() ? (hash ^= valueZeroHash(key.template get<Indices>()) + 0x9e3779b9 + (hash << 6) + (hash >> 2), 0) : 0), ...);
+  }(std::index_sequence_for<Arms...>{});
+  return hash;
+}
+
+namespace detail {
+/** Entries a keyed collection holds before an index is worth its allocations; below this a scan is faster. */
+inline constexpr std::size_t keyedIndexThreshold = 16;
+inline constexpr std::size_t keyedAbsent = static_cast<std::size_t>(-1);
+
+/**
+ * Hash to insertion serial, for the keyed collections' lookups.
+ *
+ * A serial rather than a position because a deletion shifts every later position and moves no serial;
+ * the position of a serial is a binary search over the (strictly increasing) serial list the collection
+ * already keeps for its iterators. Insertion order stays where the specification requires it, in the
+ * vector; this only answers "where is the key" without walking the vector.
+ */
+struct KeyedIndex {
+  std::unordered_multimap<std::size_t, std::uint64_t> byHash;
+  bool built = false;
+  void clear() {
+    byHash.clear();
+    built = false;
+  }
+  void erase(std::size_t hash, std::uint64_t serial) {
+    const auto range = byHash.equal_range(hash);
+    for (auto it = range.first; it != range.second; ++it) {
+      if (it->second == serial) {
+        byHash.erase(it);
+        return;
+      }
+    }
+  }
+};
+}  // namespace detail
+
+/**
  * `new Set([a, b, ...]).has(key)` for a Set nothing else ever sees
  * (`ir/literal-set-membership.ts`): the comparison `Set::has` makes of each
  * item, made against the literal's elements where they already live.
@@ -11618,14 +11693,14 @@ class Map {
       return;
     }
     canonicalizeKeyInPlace(key);
-    for (std::pair<K, V>& entry : entries_) {
-      if (sameValueZero(entry.first, key)) {
-        entry.second = std::move(value);
-        return;
-      }
+    const std::size_t found = positionOf(key);
+    if (found != detail::keyedAbsent) {
+      entries_[found].second = std::move(value);
+      return;
     }
     entries_.emplace_back(std::move(key), std::move(value));
     serials_.push_back(nextSerial_++);
+    noteAppended();
   }
 
   /**
@@ -11637,18 +11712,13 @@ class Map {
    */
   Optional<V> get(const K& key) const {
     if (view_) [[unlikely]] return view_->get(key);
-    for (const std::pair<K, V>& entry : entries_) {
-      if (sameValueZero(entry.first, key)) return Optional<V>(entry.second);
-    }
-    return Optional<V>();
+    const std::size_t found = positionOf(key);
+    return found == detail::keyedAbsent ? Optional<V>() : Optional<V>(entries_[found].second);
   }
 
   bool has(const K& key) const {
     if (view_) [[unlikely]] return view_->has(key);
-    for (const std::pair<K, V>& entry : entries_) {
-      if (sameValueZero(entry.first, key)) return true;
-    }
-    return false;
+    return positionOf(key) != detail::keyedAbsent;
   }
 
   /** ECMA-262 23.1.3.3 `delete`: true when an entry was actually removed. */
@@ -11658,13 +11728,14 @@ class Map {
       if (!view_->remove(key, removed)) rejectViewWrite();
       return removed;
     }
-    for (std::size_t index = 0; index < entries_.size(); ++index) {
-      if (!sameValueZero(entries_[index].first, key)) continue;
-      entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(index));
-      serials_.erase(serials_.begin() + static_cast<std::ptrdiff_t>(index));
-      return true;
+    const std::size_t index = positionOf(key);
+    if (index == detail::keyedAbsent) return false;
+    if constexpr (valueZeroHashable<K>) {
+      if (index_.built) index_.erase(valueZeroHash(entries_[index].first), serials_[index]);
     }
-    return false;
+    entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(index));
+    serials_.erase(serials_.begin() + static_cast<std::ptrdiff_t>(index));
+    return true;
   }
 
   void clear() {
@@ -11674,6 +11745,7 @@ class Map {
     }
     entries_.clear();
     serials_.clear();
+    index_.clear();
   }
 
   /**
@@ -11719,9 +11791,43 @@ class Map {
     gea::host::throwRuntimeError("TypeError", "a Map read through a ReadonlyMap view cannot be written through that view");
   }
 
+  /** The position of the entry whose key is SameValueZero-equal to `key`, or `keyedAbsent`. */
+  std::size_t positionOf(const K& key) const {
+    if constexpr (valueZeroHashable<K>) {
+      if (index_.built) {
+        const auto range = index_.byHash.equal_range(valueZeroHash(key));
+        for (auto it = range.first; it != range.second; ++it) {
+          const auto at = std::lower_bound(serials_.begin(), serials_.end(), it->second);
+          const std::size_t position = static_cast<std::size_t>(at - serials_.begin());
+          if (sameValueZero(entries_[position].first, key)) return position;
+        }
+        return detail::keyedAbsent;
+      }
+    }
+    for (std::size_t position = 0; position < entries_.size(); ++position) {
+      if (sameValueZero(entries_[position].first, key)) return position;
+    }
+    return detail::keyedAbsent;
+  }
+
+  /** Keeps the index in step with an entry just appended, and builds it when the map first outgrows a scan. */
+  void noteAppended() {
+    if constexpr (valueZeroHashable<K>) {
+      if (index_.built) {
+        index_.byHash.emplace(valueZeroHash(entries_.back().first), serials_.back());
+      } else if (entries_.size() >= detail::keyedIndexThreshold) {
+        index_.byHash.reserve(entries_.size() * 2);
+        for (std::size_t position = 0; position < entries_.size(); ++position)
+          index_.byHash.emplace(valueZeroHash(entries_[position].first), serials_[position]);
+        index_.built = true;
+      }
+    }
+  }
+
   std::vector<std::pair<K, V>> entries_;
   std::vector<std::uint64_t> serials_;
   std::uint64_t nextSerial_ = 1;
+  detail::KeyedIndex index_;
   std::shared_ptr<const detail::MapViewSource<K, V>> view_;
 };
 
@@ -11812,9 +11918,7 @@ class Set {
   /** ECMA-262 24.2.3.1 `add`: a key already present is a no-op that keeps its original insertion position. */
   void add(K key) {
     canonicalizeKeyInPlace(key);
-    for (const K& item : items_) {
-      if (sameValueZero(item, key)) return;
-    }
+    if (positionOf(key) != detail::keyedAbsent) return;
     // A set built from a short literal (`new Set([a, b, c, d])`, which the
     // mongodb driver does per command) grew each vector 1, 2, 4: six
     // allocations for four members. One reservation each covers the literal.
@@ -11824,28 +11928,26 @@ class Set {
     }
     items_.push_back(std::move(key));
     serials_.push_back(nextSerial_++);
+    noteAppended();
   }
 
-  bool has(const K& key) const {
-    for (const K& item : items_) {
-      if (sameValueZero(item, key)) return true;
-    }
-    return false;
-  }
+  bool has(const K& key) const { return positionOf(key) != detail::keyedAbsent; }
 
   bool remove(const K& key) {
-    for (std::size_t index = 0; index < items_.size(); ++index) {
-      if (!sameValueZero(items_[index], key)) continue;
-      items_.erase(items_.begin() + static_cast<std::ptrdiff_t>(index));
-      serials_.erase(serials_.begin() + static_cast<std::ptrdiff_t>(index));
-      return true;
+    const std::size_t index = positionOf(key);
+    if (index == detail::keyedAbsent) return false;
+    if constexpr (valueZeroHashable<K>) {
+      if (index_.built) index_.erase(valueZeroHash(items_[index]), serials_[index]);
     }
-    return false;
+    items_.erase(items_.begin() + static_cast<std::ptrdiff_t>(index));
+    serials_.erase(serials_.begin() + static_cast<std::ptrdiff_t>(index));
+    return true;
   }
 
   void clear() {
     items_.clear();
     serials_.clear();
+    index_.clear();
   }
   double size() const { return static_cast<double>(items_.size()); }
 
@@ -11860,9 +11962,42 @@ class Set {
   }
 
  private:
+  /** `Map::positionOf`'s twin: the position of the item SameValueZero-equal to `key`, or `keyedAbsent`. */
+  std::size_t positionOf(const K& key) const {
+    if constexpr (valueZeroHashable<K>) {
+      if (index_.built) {
+        const auto range = index_.byHash.equal_range(valueZeroHash(key));
+        for (auto it = range.first; it != range.second; ++it) {
+          const auto at = std::lower_bound(serials_.begin(), serials_.end(), it->second);
+          const std::size_t position = static_cast<std::size_t>(at - serials_.begin());
+          if (sameValueZero(items_[position], key)) return position;
+        }
+        return detail::keyedAbsent;
+      }
+    }
+    for (std::size_t position = 0; position < items_.size(); ++position) {
+      if (sameValueZero(items_[position], key)) return position;
+    }
+    return detail::keyedAbsent;
+  }
+
+  void noteAppended() {
+    if constexpr (valueZeroHashable<K>) {
+      if (index_.built) {
+        index_.byHash.emplace(valueZeroHash(items_.back()), serials_.back());
+      } else if (items_.size() >= detail::keyedIndexThreshold) {
+        index_.byHash.reserve(items_.size() * 2);
+        for (std::size_t position = 0; position < items_.size(); ++position)
+          index_.byHash.emplace(valueZeroHash(items_[position]), serials_[position]);
+        index_.built = true;
+      }
+    }
+  }
+
   std::vector<K> items_;
   std::vector<std::uint64_t> serials_;
   std::uint64_t nextSerial_ = 1;
+  detail::KeyedIndex index_;
 };
 
 /**
