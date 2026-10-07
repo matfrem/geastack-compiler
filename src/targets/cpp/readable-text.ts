@@ -119,6 +119,70 @@ export const dropDefaultedAttributes = (text: string): string => {
   return from === 0 ? text : result + text.slice(from)
 }
 
+/** What one line of emitted C++ does to the nesting of braces. A `namespace` line, a preprocessor line and the inside of a block comment do not count. */
+interface LineShape {
+  /** The depth the line's own statement sits at: the depth on entry, less a `}` the line starts with. */
+  readonly level: number
+  /** The depth after the line. */
+  readonly after: number
+  /** A preprocessor line, a `namespace` line or part of a block comment: it is never indented and does not change the depth. */
+  readonly skipped: boolean
+}
+
+/**
+ * Brace depth per line, counted outside string literals, character literals and comments. `null` when the
+ * text has a raw string literal, which runs across lines in a way this scan does not follow.
+ */
+const shapesOfLines = (lines: readonly string[]): LineShape[] | null => {
+  let depth = 0
+  let inBlockComment = false
+  let rawString = false
+  const shapes = lines.map((line): LineShape => {
+    const unchanged = { level: depth, after: depth, skipped: true }
+    if (inBlockComment) {
+      if (line.includes('*/')) inBlockComment = false
+      return unchanged
+    }
+    if (line.startsWith('#')) return unchanged
+    const isNamespaceLine = (line.startsWith('namespace') && line.endsWith('{')) || line.startsWith('}  // namespace')
+    let opens = 0
+    let closes = 0
+    let leadingCloses = 0
+    let counting = true
+    for (let index = 0; index < line.length && counting; index += 1) {
+      const character = line[index]
+      if (character === '"' || character === "'") {
+        if (character === "'" && index > 0 && isIdentifierCharacter(line[index - 1])) continue
+        if (character === '"' && line[index - 1] === 'R' && !isIdentifierCharacter(line[index - 2])) rawString = true
+        index += 1
+        while (index < line.length && line[index] !== character) index += line[index] === '\\' ? 2 : 1
+      } else if (character === '/' && line[index + 1] === '/') counting = false
+      else if (character === '/' && line[index + 1] === '*') {
+        const end = line.indexOf('*/', index + 2)
+        if (end < 0) {
+          inBlockComment = true
+          counting = false
+        } else index = end + 1
+      } else if (character === '{') opens += 1
+      else if (character === '}') {
+        closes += 1
+        if (opens === 0 && line.slice(0, index).trim() === '') leadingCloses += 1
+      }
+    }
+    if (isNamespaceLine) return unchanged
+    const shape = { level: Math.max(0, depth - leadingCloses), after: Math.max(0, depth + opens - closes), skipped: false }
+    depth = shape.after
+    return shape
+  })
+  return rawString ? null : shapes
+}
+
+const isLabelLine = (line: string): boolean => {
+  if (!line.endsWith(':') || line.includes(' ') || line.startsWith('case') || line === 'default:') return false
+  const name = line.slice(0, -1)
+  return [...name].every(isIdentifierCharacter) && name !== 'public' && name !== 'private' && name !== 'protected'
+}
+
 /**
  * Indents the lines of a block that the emitter wrote flush left.
  *
@@ -129,55 +193,16 @@ export const dropDefaultedAttributes = (text: string): string => {
  * sits one level out from the statements it labels.
  */
 export const indentBlocks = (text: string): string => {
-  let rawString = false
-  let depth = 0
-  let inBlockComment = false
-  const isLabel = (line: string): boolean => {
-    if (!line.endsWith(':') || line.includes(' ') || line.startsWith('case') || line === 'default:') return false
-    const name = line.slice(0, -1)
-    return [...name].every(isIdentifierCharacter) && name !== 'public' && name !== 'private' && name !== 'protected'
-  }
-  const indented = text
-    .split('\n')
-    .map((line) => {
-      if (inBlockComment) {
-        if (line.includes('*/')) inBlockComment = false
-        return line
-      }
-      if (line.startsWith('#')) return line
-      const isNamespaceLine = (line.startsWith('namespace') && line.endsWith('{')) || line.startsWith('}  // namespace')
-      let opens = 0
-      let closes = 0
-      let leadingCloses = 0
-      let counting = true
-      for (let index = 0; index < line.length && counting; index += 1) {
-        const character = line[index]
-        if (character === '"' || character === "'") {
-          if (character === "'" && index > 0 && isIdentifierCharacter(line[index - 1])) continue
-          // A raw string runs across lines in a way this scan does not follow.
-          if (character === '"' && line[index - 1] === 'R' && !isIdentifierCharacter(line[index - 2])) rawString = true
-          index += 1
-          while (index < line.length && line[index] !== character) index += line[index] === '\\' ? 2 : 1
-        } else if (character === '/' && line[index + 1] === '/') counting = false
-        else if (character === '/' && line[index + 1] === '*') {
-          const end = line.indexOf('*/', index + 2)
-          if (end < 0) {
-            inBlockComment = true
-            counting = false
-          } else index = end + 1
-        } else if (character === '{') opens += 1
-        else if (character === '}') {
-          closes += 1
-          if (opens === 0 && line.slice(0, index).trim() === '') leadingCloses += 1
-        }
-      }
-      if (isNamespaceLine) return line
-      const level = Math.max(0, depth - leadingCloses - (isLabel(line) ? 1 : 0))
-      depth = Math.max(0, depth + opens - closes)
-      return line === '' || line[0] === ' ' || line[0] === '\t' || level === 0 ? line : `${'  '.repeat(level)}${line}`
+  const lines = text.split('\n')
+  const shapes = shapesOfLines(lines)
+  if (shapes === null) return text
+  return lines
+    .map((line, index) => {
+      const shape = shapes[index] as LineShape
+      const level = Math.max(0, shape.level - (isLabelLine(line) ? 1 : 0))
+      return shape.skipped || line === '' || line[0] === ' ' || line[0] === '\t' || level === 0 ? line : `${'  '.repeat(level)}${line}`
     })
     .join('\n')
-  return rawString ? text : indented
 }
 
 /** Names a parameter may not take: another meaning already attached to the spelling, in the language or in the headers a build pulls in. */
@@ -424,17 +449,47 @@ export const unwrapRedundantParentheses = (text: string): string => {
 
 const mergeableTypes = ['double ', 'long long ', 'bool ', 'int ', 'gString ', 'gRef<']
 
+/** The label a line defines (`block4:` or `block4: ;`), or null. */
+const labelDefinedBy = (trimmed: string): string | null => {
+  const colon = trimmed.indexOf(':')
+  if (colon <= 0 || (trimmed[colon + 1] !== undefined && trimmed[colon + 1] !== ' ')) return null
+  const name = trimmed.slice(0, colon)
+  return [...name].every(isIdentifierCharacter) &&
+    name.startsWith('block') &&
+    (colon + 1 === trimmed.length || trimmed.slice(colon + 1).trim() === ';')
+    ? name
+    : null
+}
+
+/** Every label a line jumps to. */
+const gotoTargetsInLine = (line: string): string[] => {
+  const targets: string[] = []
+  for (let at = line.indexOf('goto '); at >= 0; at = line.indexOf('goto ', at + 5)) {
+    if (isIdentifierCharacter(line[at - 1])) continue
+    let end = at + 5
+    while (end < line.length && isIdentifierCharacter(line[end])) end += 1
+    if (end > at + 5) targets.push(line.slice(at + 5, end))
+  }
+  return targets
+}
+
 /**
- * `double x;` ... `x = a / b;` as `double x = a / b;`, in a function that has no `goto` or `switch`.
+ * `double x;` ... `x = a / b;` as `double x = a / b;`.
  *
  * Both ends must be at the same indentation (the same block), the assignment must be the first line that
- * names the variable, and its right side must not name it. A `goto` (or a `case` label) may not jump past an
- * initialised declaration, which is why the emitter hoists declarations to the top in the first place, so a
- * function that has either is left alone. Only the types whose initialisation from another value is the
- * same copy their assignment was are merged.
+ * names the variable, and its right side must not name it. Only the types whose initialisation from another
+ * value is the same copy their assignment was are merged.
+ *
+ * A declaration with an initialiser may not be jumped over, which is why the emitter declares everything at
+ * the head of its scope. Moving it to the assignment is legal only if no `goto` that sits before that line in
+ * the same scope lands on a label after it: such a jump would enter the rest of the scope past the new
+ * initialisation. Jumps backwards (a loop's `goto block1`) and jumps that leave the scope do not cross it. A
+ * function with a `switch` is left alone.
  */
 export const mergeDeclarations = (text: string): string => {
   const lines = text.split('\n')
+  const shapes = shapesOfLines(lines)
+  if (shapes === null) return text
   const removed = new Set<number>()
   let functionStart = -1
   for (let index = 0; index < lines.length; index += 1) {
@@ -447,21 +502,55 @@ export const mergeDeclarations = (text: string): string => {
     const first = functionStart
     const range = lines.slice(functionStart, index + 1)
     functionStart = -1
-    if (range.some((entry) => entry.includes('goto ') || entry.includes('switch (') || entry.trimStart().startsWith('case '))) continue
-    // Where each name occurs, as a line offset, ignoring members and qualified names.
+    if (range.some((entry) => entry.includes('switch (') || entry.trimStart().startsWith('case '))) continue
+    // Where each name occurs, as a line offset, ignoring members and qualified names; and where jumps start and land.
     const occurrences = new Map<string, number[]>()
-    range.forEach((entry, offset) =>
+    const labelLine = new Map<string, number>()
+    const jumps: { readonly from: number; readonly to: string }[] = []
+    range.forEach((entry, offset) => {
       eachIdentifier(entry, (token, start) => {
         if (isMemberOrQualified(entry, start)) return
         const found = occurrences.get(token)
         if (found === undefined) occurrences.set(token, [offset])
         else if (found[found.length - 1] !== offset) found.push(offset)
       })
-    )
+      const label = labelDefinedBy(entry.trim())
+      if (label !== null) labelLine.set(label, offset)
+      for (const to of gotoTargetsInLine(entry)) jumps.push({ from: offset, to })
+    })
+    /** The line where the block holding `offset` ends, and where it begins (the line whose `{` opened it). */
+    const scopeOf = (offset: number): { readonly start: number; readonly end: number } => {
+      const depth = (shapes[first + offset] as LineShape).level
+      let start = 0
+      for (let up = offset - 1; up >= 0; up -= 1) {
+        const shape = shapes[first + up] as LineShape
+        if (!shape.skipped && shape.after === depth && shape.level === depth - 1) {
+          start = up
+          break
+        }
+      }
+      let end = range.length - 1
+      for (let down = offset + 1; down < range.length; down += 1) {
+        const shape = shapes[first + down] as LineShape
+        if (!shape.skipped && shape.level < depth) {
+          end = down
+          break
+        }
+      }
+      return { start, end }
+    }
+    const crossed = (offset: number): boolean => {
+      const { start, end } = scopeOf(offset)
+      return jumps.some((jump) => {
+        const lands = labelLine.get(jump.to)
+        return jump.from > start && jump.from < offset && lands !== undefined && lands > offset && lands <= end
+      })
+    }
     range.forEach((entry, offset) => {
       const indent = entry.length - entry.trimStart().length
       const trimmed = entry.slice(indent)
-      if (indent === 0 || !trimmed.endsWith(';') || trimmed.includes(' = ') || !mergeableTypes.some((type) => trimmed.startsWith(type)))
+      const depth = (shapes[first + offset] as LineShape).level
+      if (depth === 0 || !trimmed.endsWith(';') || trimmed.includes(' = ') || !mergeableTypes.some((type) => trimmed.startsWith(type)))
         return
       const split = trimmed.lastIndexOf(' ')
       const name = trimmed.slice(split + 1, -1)
@@ -471,14 +560,20 @@ export const mergeDeclarations = (text: string): string => {
       const user = range[next] as string
       const userIndent = user.length - user.trimStart().length
       const prefix = `${name} = `
-      if (userIndent !== indent || !user.slice(indent).startsWith(prefix) || !user.endsWith(';')) return
-      const right = user.slice(indent + prefix.length, -1)
+      if (!user.slice(userIndent).startsWith(prefix) || !user.endsWith(';')) return
+      // The same block, not merely the same indentation: it is still open at the assignment, which is in it and not in a block it contains.
+      if ((shapes[first + next] as LineShape).level !== depth) return
+      for (let between = offset + 1; between < next; between += 1) {
+        const shape = shapes[first + between] as LineShape
+        if (!shape.skipped && shape.level < depth) return
+      }
+      const right = user.slice(userIndent + prefix.length, -1)
       let mentionsItself = false
       eachIdentifier(right, (token, start) => {
         if (token === name && !isMemberOrQualified(right, start)) mentionsItself = true
       })
-      if (mentionsItself || removed.has(first + next)) return
-      lines[first + next] = `${' '.repeat(indent)}${trimmed.slice(0, split)} ${name} = ${right};`
+      if (mentionsItself || removed.has(first + next) || crossed(next)) return
+      lines[first + next] = `${user.slice(0, userIndent)}${trimmed.slice(0, split)} ${name} = ${right};`
       removed.add(first + offset)
     })
   }
