@@ -54,6 +54,16 @@ const ownNameOf = (declaration: ts.Declaration): string | null => {
     return declaration.name === undefined ? null : declaration.name.text
   if (ts.isVariableDeclaration(declaration) || ts.isParameter(declaration) || ts.isBindingElement(declaration))
     return ts.isIdentifier(declaration.name) ? declaration.name.text : null
+  // A class field with an initialiser is a function of its own (`private models = new Map()`): its initialiser, run on construction.
+  if (ts.isPropertyDeclaration(declaration) && ts.isClassLike(declaration.parent)) {
+    const owner = declaration.parent.name?.text
+    const member = memberNameOf(declaration.name)
+    return owner === undefined || member === null ? null : `${owner}_${member}_init`
+  }
+  if (ts.isClassStaticBlockDeclaration(declaration)) {
+    const owner = ts.isClassLike(declaration.parent) ? declaration.parent.name?.text : undefined
+    return owner === undefined ? null : `${owner}_static`
+  }
   if (ts.isConstructorDeclaration(declaration)) {
     const owner = declaration.parent.name?.text
     return owner === undefined ? null : `${owner}_constructor`

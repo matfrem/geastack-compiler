@@ -2,7 +2,7 @@ import ts from 'typescript'
 
 /**
  * The name an anonymous object type is known by, when the program gives it one:
- * the variable an object literal initializes (`export const POND = { ... } as const`).
+ * the variable, class field or property an object literal initializes (`export const POND = { ... } as const`).
  *
  * Display evidence for a target that labels what it emits -- a shape that is
  * not a declared interface or alias has nothing else a reader could search the
@@ -22,5 +22,13 @@ export const variableNameOfObjectLiteralType = (type: ts.Type): string | null =>
       ts.isNonNullExpression(node))
   )
     node = node.parent
-  return node !== undefined && ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) ? node.name.text : null
+  if (node === undefined) return null
+  if (ts.isVariableDeclaration(node)) return ts.isIdentifier(node.name) ? node.name.text : null
+  // A class field (`slideFrom = { x: 0, z: 0 }`) is named by its class too, since `slideFrom` is every class's.
+  if (ts.isPropertyDeclaration(node) && ts.isClassLike(node.parent) && ts.isIdentifier(node.name)) {
+    const owner = node.parent.name?.text
+    return owner === undefined ? node.name.text : `${owner}_${node.name.text}`
+  }
+  if (ts.isPropertyAssignment(node) && ts.isIdentifier(node.name)) return node.name.text
+  return null
 }
