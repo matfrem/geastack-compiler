@@ -63,6 +63,8 @@ interface EmitRequest {
   /** `--isolate-symbols`: this unit is one of several a resident build links -- see `TranslationUnitInput.isolateSymbols`. */
   readonly isolateSymbols: boolean
   readonly realmStorage: boolean
+  /** `--short-names`: respell class, record and runtime type names for a reader -- see `TranslationUnitInput.shortNames`. */
+  readonly shortNames: boolean
   /** `--translation-units single|per-file`: how many C++ files the program becomes -- see `CppTranslationUnitLayout`. */
   readonly translationUnits: CppTranslationUnitLayout
   readonly unhonored: readonly string[]
@@ -92,6 +94,7 @@ const parseEmitArguments = (argv: readonly string[]): EmitRequest | string => {
   let closedScriptScope = false
   let isolateSymbols = false
   let realmStorage = false
+  let shortNames = false
   let translationUnits: CppTranslationUnitLayout = 'single'
   // Carried, never interpreted: an option here belongs to whichever library
   // its prefix names, and this command's job is to deliver it rather than to
@@ -124,6 +127,8 @@ const parseEmitArguments = (argv: readonly string[]): EmitRequest | string => {
       closedScriptScope = true
     } else if (argument === '--realm-storage') {
       realmStorage = true
+    } else if (argument === '--short-names') {
+      shortNames = true
     } else if (argument === '--isolate-symbols') {
       isolateSymbols = true
     } else if (argument === '--translation-units') {
@@ -174,6 +179,7 @@ const parseEmitArguments = (argv: readonly string[]): EmitRequest | string => {
     projectFileName,
     isolateSymbols,
     realmStorage,
+    shortNames,
     translationUnits,
     unhonored
   }
@@ -245,6 +251,7 @@ export const runEmit = async (argv: readonly string[], moduleGraph = false): Pro
     pluginOptions: parsed.pluginOptions,
     isolateSymbols: parsed.isolateSymbols,
     realmStorage: parsed.realmStorage,
+    shortNames: parsed.shortNames,
     translationUnits: parsed.translationUnits,
     unitBaseName: unitStemOf(parsed.input),
     ...(parsed.entrySymbol === null ? {} : { entrySymbol: parsed.entrySymbol })
@@ -280,6 +287,7 @@ const runModuleGraph = (parsed: EmitRequest, plugins: readonly CompilerPlugin[])
     ...(parsed.closedScriptScope ? { closedScriptScope: true } : {}),
     isolateSymbols: parsed.isolateSymbols,
     realmStorage: parsed.realmStorage,
+    shortNames: parsed.shortNames,
     translationUnits: parsed.translationUnits,
     unitBaseName: unitStemOf(graph.entry),
     ...(parsed.entrySymbol === null ? {} : { entrySymbol: parsed.entrySymbol })

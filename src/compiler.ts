@@ -168,6 +168,8 @@ export interface CompilationRequest {
   readonly isolateSymbols?: boolean
   /** Give module cells and class statics one native instance per execution realm. */
   readonly realmStorage?: boolean
+  /** Spell classes, records and the runtime's common types in the short, readable form -- see `TranslationUnitInput.shortNames`. */
+  readonly shortNames?: boolean
   /** Retain final IR in the result for diagnostics. Off by default so normal builds can release it. */
   readonly includeIr?: boolean
   /**
@@ -1381,9 +1383,13 @@ export const compile = (request: CompilationRequest): CompilationResult => {
           // elsewhere. See `CppSymbolIsolation`.
           isolateSymbols: request.isolateSymbols === true ? 'required' : 'preferred',
           realmStorage: request.realmStorage === true,
+          shortNames: request.shortNames === true,
           layout: request.translationUnits ?? 'single',
           unitBaseName: request.unitBaseName ?? 'unit',
           sourceFileNames: frontend.sourceFileNames,
+          declarationNames: frontend.declarationNames,
+          parameterNames: frontend.parameterNames,
+          shapeNames: frontend.shapeNames,
           wellKnownSymbols: frontend.wellKnownSymbols,
           // The one deriver this compilation built, so emission asks the same
           // authority the plan did. See `RepresentationPublication.deriver`.

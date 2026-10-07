@@ -114,6 +114,7 @@ import {
   physicalInheritedCallableResultAt
 } from './physical-overload-result.js'
 import { arrayAssignmentPatternSourceExpression, arrayAssignmentTargetOf } from './assignment-patterns.js'
+import { variableNameOfObjectLiteralType } from './structural-shape-names.js'
 import { emptyCommonJsModuleRecordCensus, type CommonJsModuleRecordCensus } from './commonjs-module-record.js'
 
 /**
@@ -302,6 +303,8 @@ export interface StructuralMapper {
    * relevant fillings; see `SpecializationCensus.copiesMayDifferInLayout`.
    */
   readonly classCopies: () => ReadonlyMap<DeclarationId, readonly ClassCopyKey[]>
+  /** The variable name of each anonymous object shape an object literal initialized -- display evidence, decided on by nothing. */
+  readonly shapeNames: () => ReadonlyMap<StructuralTypeId, string>
 }
 
 /**
@@ -397,6 +400,8 @@ export const createStructuralMapper = (
   // answers are the same from every view. `classCopyKeys` is what
   // `classCopies` publishes to the deriver.
   const classCopyKeys = new Map<DeclarationId, Map<number, ClassCopyKey>>()
+  // First name wins: shapes intern by structure, so a later literal of the same layout is the same shape.
+  const shapeNames = new Map<StructuralTypeId, string>()
   const views = new Map<string, StructuralMapper>()
   const mapperFor = (path: SpecializationPath, bindingPath: SpecializationPath = path): StructuralMapper => {
     // Keyed by the copy, owner included, never by the ordinals alone: `copyKeyOf` (identities.ts) says why.
@@ -432,6 +437,7 @@ export const createStructuralMapper = (
       viewIndependentKeyOf,
       sharedCompleted,
       classCopyKeys,
+      shapeNames,
       disagreements,
       sloppyAbsence,
       suppressedWrites,
@@ -470,6 +476,7 @@ const buildMapper = (
   viewIndependentKeyOf: (type: ts.Type) => string | null,
   sharedCompleted: Map<ts.Type, StructuralTypeId>,
   classCopyKeys: Map<DeclarationId, Map<number, ClassCopyKey>>,
+  shapeNames: Map<StructuralTypeId, string>,
   disagreements: StructuralDisagreement[],
   sloppyAbsence: SloppyAbsenceCensus,
   suppressedWrites: SuppressedWriteArmCensus,
@@ -3077,6 +3084,10 @@ const buildMapper = (
   }
 
   const remember = (type: ts.Type, id: StructuralTypeId): StructuralTypeId => {
+    if (!shapeNames.has(id)) {
+      const name = variableNameOfObjectLiteralType(type)
+      if (name !== null) shapeNames.set(id, name)
+    }
     completed.set(type, id)
     journal?.push(type) // so an unwind can take it back -- see `typeOf`'s retry
     return id
@@ -5860,6 +5871,7 @@ const buildMapper = (
     patternReadTypeAt: (element) => parameters.patternReadTypeAt?.(element) ?? null,
     structuralDisagreements: disagreements,
     structuralFormViolations: preparedRules.formViolations,
+    shapeNames: () => shapeNames,
     classCopies: () =>
       new Map([...classCopyKeys].map(([root, copies]) => [root, [...copies.values()].sort((a, b) => a.ordinal - b.ordinal)]))
   }

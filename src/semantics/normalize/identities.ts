@@ -1,5 +1,6 @@
 import ts from 'typescript'
 import { declarationId, functionId, nodeId, type DeclarationId, type FunctionId, type NodeId } from '../../identity/ids.js'
+import { displayNameOfDeclaration, parameterNamesOf } from './declaration-display.js'
 import { isAmbientDeclaration } from '../ambient.js'
 import { inheritedImplementationOf, mergedDeclarationOf } from './merged-declaration.js'
 import { emptySpecializationCensus, genericSubjectOf, type SpecializationCensus } from './specialization.js'
@@ -118,6 +119,17 @@ export interface IdentityTable {
    * sources. Display evidence for naming emitted units; nothing decides on it.
    */
   readonly sourceFileNames: ReadonlyMap<string, string>
+  /**
+   * The name a class, interface, type alias or enum was written under, for every
+   * such declaration an identity was minted for. Display evidence like
+   * `sourceFileNames`: a target may spell it into an emitted name so a reader can
+   * find the type again, and nothing may decide on it. Live rather than a
+   * snapshot -- identities are minted as the walk reaches them -- so it is
+   * complete only once the frontend has finished.
+   */
+  readonly declarationNames: ReadonlyMap<DeclarationId, string>
+  /** The names each callable's parameters were written under, by position; display evidence, decided on by nothing. */
+  readonly parameterNames: ReadonlyMap<DeclarationId, readonly (string | null)[]>
   readonly nodeIdOf: (node: ts.Node, path?: SpecializationPath) => NodeId
   readonly declarationIdOf: (declaration: ts.Declaration, path?: SpecializationPath) => DeclarationId
   readonly functionIdOf: (declaration: ts.Declaration, path?: SpecializationPath) => FunctionId
@@ -306,9 +318,17 @@ export const createIdentityTable = (
     return id
   }
 
+  const declarationNames = new Map<DeclarationId, string>()
+  const parameterNames = new Map<DeclarationId, readonly (string | null)[]>()
   const declarationIdOf = (declaration: ts.Declaration, path: SpecializationPath = rootSpecialization): DeclarationId => {
     const { file, ordinal } = ordinalOf(declaration)
     const id = declarationId(file, ordinal, specializationKey(path))
+    if (!declarationNames.has(id)) {
+      const name = displayNameOfDeclaration(declaration)
+      if (name !== null) declarationNames.set(id, name)
+      const parameters = parameterNamesOf(declaration)
+      if (parameters !== null) parameterNames.set(id, parameters)
+    }
     return id
   }
 
@@ -629,6 +649,8 @@ export const createIdentityTable = (
       prefixFor,
       fileIdentityOf,
       sourceFileNames,
+      declarationNames,
+      parameterNames,
       nodeIdOf: (node, override) => nodeIdOf(node, override ?? pathOf(node)),
       declarationIdOf: (declaration, override) => declarationIdOf(declaration, override ?? pathOf(declaration)),
       functionIdOf: (declaration, override) => functionIdOf(declaration, override ?? pathOf(declaration)),
@@ -656,6 +678,8 @@ export const createIdentityTable = (
     prefixFor,
     fileIdentityOf,
     sourceFileNames,
+    declarationNames,
+    parameterNames,
     nodeIdOf,
     declarationIdOf,
     functionIdOf,

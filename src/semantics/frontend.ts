@@ -423,6 +423,10 @@ export interface FrontendResult {
    * whose bodies they hold, which is the one thing an index cannot do.
    */
   readonly sourceFileNames: ReadonlyMap<string, string>
+  /** Display names of class, interface, type alias and enum declarations (`IdentityTable.declarationNames`); decided on by nothing. */
+  readonly declarationNames: ReadonlyMap<DeclarationId, string>
+  /** Parameter names by callable (`IdentityTable.parameterNames`); display evidence, decided on by nothing. */
+  readonly parameterNames: ReadonlyMap<DeclarationId, readonly (string | null)[]>
   /**
    * Declared types that are one of the eight standard TypedArray view
    * interfaces, keyed by the *instance* type's declaration and valued by the
@@ -608,6 +612,8 @@ export interface FrontendResult {
    * to the deriver as its `ClassCopyPolicy`.
    */
   readonly classCopies: ReadonlyMap<DeclarationId, readonly ClassCopyKey[]>
+  /** Variable names of anonymous object shapes (`StructuralMapper.shapeNames`); display evidence, decided on by nothing. */
+  readonly shapeNames: ReadonlyMap<StructuralTypeId, string>
   /**
    * Rules that answered outside their declared forms -- the 4.3 port's own
    * gate. Empty unless `GEA_STRUCTURAL_FORM_AUDIT` is set; non-empty means a
@@ -2091,6 +2097,8 @@ export const runFrontend = (input: FrontendInput): FrontendResult => {
       .map((file) => regionId(identities.nodeIdOf(file), 'module-body'))
       .filter((region) => normalized.graph.regions.has(region)),
     sourceFileNames: identities.sourceFileNames,
+    declarationNames: identities.declarationNames,
+    parameterNames: identities.parameterNames,
     typedArrayElements,
     promiseDeclaration,
     promiseLikeDeclaration,
@@ -2142,6 +2150,7 @@ export const runFrontend = (input: FrontendInput): FrontendResult => {
     cellFacts,
     structuralDisagreements: types.structuralDisagreements,
     structuralFormViolations: types.structuralFormViolations,
-    classCopies: types.classCopies()
+    classCopies: types.classCopies(),
+    shapeNames: types.shapeNames()
   }
 }

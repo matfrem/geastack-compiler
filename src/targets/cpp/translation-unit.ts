@@ -19,6 +19,7 @@ import type { CapabilityCertificate } from '../../ir/certificate.js'
 import type { CapabilityKey } from '../../ir/certify.js'
 import type { SealedRepresentationPlan } from '../../representation/plan.js'
 import {
+  declarationOfFunction,
   fileIdentityOf,
   isRegionId,
   type DeclarationId,
@@ -39,6 +40,9 @@ import type { HostSpellings } from './host/host-members.js'
 import { hostCallName } from './host/host-members.js'
 import { reactiveBoundRecordFields, reactiveDependenciesOfBodies } from './reactive-dependencies.js'
 import { buildDirectCallableIndex, buildCaptureIndex } from './captures.js'
+import { createIdentifierRenamer } from './identifier-names.js'
+import { withTypeAliases } from './type-aliases.js'
+import { dropDefaultedAttributes, foldDoubleCasts, foldThrowHelpers, indentBlocks, nameBodyParameters } from './readable-text.js'
 import { createCppDocumentBuilder, emptyCppFacts, render, spliceRendered, type CppArtifact, type RenderedCppSource } from './document.js'
 import { beginUnionAliasing, endUnionAliasing, cppNativeHandleTag } from './types.js'
 import {
@@ -381,6 +385,13 @@ export interface CppTranslationUnitInput {
   readonly isolateSymbols: CppSymbolIsolation
   readonly realmStorage?: boolean
   /**
+   * Respell the names a reader meets most -- classes, records, and the runtime's common types -- in
+   * their short form (`identifier-names.ts`, `type-aliases.ts`). Off by default: the long spelling is
+   * what every consumer that reads the emitted text was written against, and a short one is a choice
+   * a build makes for the people who read the C++.
+   */
+  readonly shortNames?: boolean
+  /**
    * How the program is laid out on disk -- see `CppTranslationUnitLayout`.
    *
    * `single` is what every unit was until this existed. `per-file` groups
@@ -398,6 +409,12 @@ export interface CppTranslationUnitInput {
   readonly unitBaseName: string
   /** Which file each identity segment names (`FrontendResult.sourceFileNames`), so a module unit can be named after its file. */
   readonly sourceFileNames: ReadonlyMap<string, string>
+  /** Source names of declarations (`FrontendResult.declarationNames`), spelled into emitted class and record names for a reader's benefit. */
+  readonly declarationNames: ReadonlyMap<DeclarationId, string>
+  /** Parameter names by callable (`FrontendResult.parameterNames`), spelled over `gea_arg_N` where nothing in the body already uses the name. */
+  readonly parameterNames: ReadonlyMap<DeclarationId, readonly (string | null)[]>
+  /** Variable names of anonymous object shapes (`FrontendResult.shapeNames`), the fallback name of a record no declaration names. */
+  readonly shapeNames: ReadonlyMap<StructuralTypeId, string>
   /** Declaration identities of the standard well-known symbols used by computed property keys. */
   readonly wellKnownSymbols: ReadonlyMap<DeclarationId, string>
   /** Proof that every obligation the program raised was satisfied. */
@@ -1832,7 +1849,16 @@ const cppIdentifierCharacters = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTU
 export const renderTranslationUnit = (input: CppTranslationUnitInput): CppTranslationUnitResult => {
   endUnionAliasing()
   try {
-    return renderTranslationUnitSession(input)
+    const result = renderTranslationUnitSession(input)
+    if (input.shortNames !== true) return result
+    const { renameAll } = createIdentifierRenamer(input.structuralTypes, input.declarationNames, input.shapeNames)
+    // `source` is `units[0].source` under `single`, so renaming the units
+    // renames it too, in the one pass that keeps the decision whole.
+    const renamed = renameAll(result.units.map((unit) => unit.source)).map((text) =>
+      withTypeAliases(indentBlocks(dropDefaultedAttributes(foldThrowHelpers(foldDoubleCasts(text)))))
+    )
+    const units = result.units.map((unit, index) => ({ ...unit, source: renamed[index] as RenderedCppSource }))
+    return { ...result, source: result.source === null ? null : (units[0]?.source ?? null), units }
   } catch (error) {
     endUnionAliasing()
     throw error
@@ -2871,6 +2897,20 @@ const renderTranslationUnitSession = (input: CppTranslationUnitInput): CppTransl
   // Rendering first is the whole of the reordering: each body's artifacts keep
   // their own facts and their own order.
   const renderedBodies: RenderedBody[] = []
+  // The parameter names a body's texts may use, when a build asked for them. Applied to ONE body's
+  // texts at a time because `gea_arg_N` means a different parameter in every body.
+  const namedParameters = (body: IrBody, artifacts: readonly CppArtifact[]): readonly CppArtifact[] => {
+    if (input.shortNames !== true || !body.abi || isRegionId(body.sourceOwner)) return artifacts
+    const names = input.parameterNames.get(declarationOfFunction(body.sourceOwner))
+    if (names === undefined || names.length !== body.abi.parameters.length) return artifacts
+    const renamed = nameBodyParameters(
+      artifacts.map((artifact) => artifact.text),
+      names
+    )
+    return artifacts.map((artifact, index) =>
+      renamed[index] === artifact.text ? artifact : { ...artifact, text: renamed[index] as string }
+    )
+  }
   for (const body of input.bodies) {
     // A body's statements are not a translation unit on their own: they need a
     // signature to live in, and the owner is what names it. The open and close
@@ -3007,7 +3047,7 @@ const renderTranslationUnitSession = (input: CppTranslationUnitInput): CppTransl
       )
       renderedBodies.push({
         body,
-        artifacts: [
+        artifacts: namedParameters(body, [
           plain(`${opening} {`),
           ...integerDispatch.map(plain),
           ...commonJsScope.map(plain),
@@ -3053,7 +3093,7 @@ const renderTranslationUnitSession = (input: CppTranslationUnitInput): CppTransl
                 plain('}')
               ]
             : [])
-        ],
+        ]),
         templateObjects: [...templateObjects.values()].slice(templateObjectsBefore)
       })
     } catch (error) {

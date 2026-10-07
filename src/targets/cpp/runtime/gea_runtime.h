@@ -10639,8 +10639,8 @@ class Dictionary {
    * than at the emitter, which cannot know whether the key is already
    * present. `std::nullopt` is "the descriptor did not state this".
    */
-  bool definePropertyFrom(const std::string& key, const V& value, std::optional<bool> writable, std::optional<bool> enumerable,
-                          std::optional<bool> configurable) {
+  bool definePropertyFrom(const std::string& key, const V& value, std::optional<bool> writable = true, std::optional<bool> enumerable = true,
+                          std::optional<bool> configurable = true) {
     // The viewed object completes the descriptor itself (6.2.5.6 against its
     // own current property), so the stated attributes travel as stated.
     if constexpr (aliasable) {
@@ -11169,12 +11169,12 @@ class NumericDictionary {
   bool defineProperty(const std::string& key, const V& value, const Attributes& attributes) {
     return entries_.defineProperty(key, value, attributes);
   }
-  bool definePropertyFrom(double key, const V& value, std::optional<bool> writable, std::optional<bool> enumerable,
-                          std::optional<bool> configurable) {
+  bool definePropertyFrom(double key, const V& value, std::optional<bool> writable = true, std::optional<bool> enumerable = true,
+                          std::optional<bool> configurable = true) {
     return definePropertyFrom(canonicalKey(key), value, writable, enumerable, configurable);
   }
-  bool definePropertyFrom(const std::string& key, const V& value, std::optional<bool> writable, std::optional<bool> enumerable,
-                          std::optional<bool> configurable) {
+  bool definePropertyFrom(const std::string& key, const V& value, std::optional<bool> writable = true, std::optional<bool> enumerable = true,
+                          std::optional<bool> configurable = true) {
     return entries_.definePropertyFrom(key, value, writable, enumerable, configurable);
   }
   bool setProperty(double key, const V& value) { return setProperty(canonicalKey(key), value); }
@@ -11293,8 +11293,8 @@ class SymbolDictionary {
     return true;
   }
 
-  bool definePropertyFrom(const Symbol& key, const V& value, std::optional<bool> writable, std::optional<bool> enumerable,
-                          std::optional<bool> configurable) {
+  bool definePropertyFrom(const Symbol& key, const V& value, std::optional<bool> writable = true, std::optional<bool> enumerable = true,
+                          std::optional<bool> configurable = true) {
     const Attributes current = has(key) ? attributesOf(key) : Attributes{false, false, false};
     return defineProperty(key, value,
                           Attributes{writable.value_or(current.writable), enumerable.value_or(current.enumerable),
