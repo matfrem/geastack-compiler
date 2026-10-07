@@ -57,6 +57,7 @@ export const typeAliasBlock = [
   ...types.map(([from, to]) => `using ${to} = ${from};`),
   `using ${compound.to} = ${compound.from};`,
   'template <class T> constexpr double gDouble(const T& value) { return static_cast<double>(value); }',
+  'template <class Cursor> inline auto gItems(Cursor& cursor) { return gea::cursorRange(cursor); }',
   ...throwHelperDefinitions
 ].join('\n')
 

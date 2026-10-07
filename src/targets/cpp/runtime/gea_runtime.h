@@ -13171,6 +13171,50 @@ class LocalDictionaryCursor {
 };
 
 /**
+ * A range over a cursor, for `for (T item : cursorRange(cursor)) { ... }`.
+ *
+ * The loop it replaces is `for (;;) { T item = cursor.arrayNext(); bool done = cursor.done(); if (done) break; ... }`,
+ * and this keeps its order exactly: `begin()` and every `++` call `arrayNext()` and then `done()`, and the body runs
+ * when `done()` answered false. A `break` leaves the cursor where it was, and a `continue` goes to the next `++`. So
+ * the cursor is advanced the same number of times as before, by the same two calls, in the same order.
+ */
+template <typename Cursor>
+class CursorRange {
+ public:
+  using Element = decltype(std::declval<Cursor&>().arrayNext());
+  struct Sentinel {};
+  class Iterator {
+   public:
+    explicit Iterator(Cursor& cursor) : cursor_(&cursor) { advance(); }
+    Element operator*() { return std::move(value_); }
+    Iterator& operator++() {
+      advance();
+      return *this;
+    }
+    bool operator!=(Sentinel) const { return !finished_; }
+
+   private:
+    void advance() {
+      value_ = cursor_->arrayNext();
+      finished_ = cursor_->done();
+    }
+    Cursor* cursor_;
+    Element value_{};
+    bool finished_ = false;
+  };
+  explicit CursorRange(Cursor& cursor) : cursor_(cursor) {}
+  Iterator begin() { return Iterator(cursor_); }
+  Sentinel end() const { return {}; }
+
+ private:
+  Cursor& cursor_;
+};
+template <typename Cursor>
+inline CursorRange<Cursor> cursorRange(Cursor& cursor) {
+  return CursorRange<Cursor>(cursor);
+}
+
+/**
  * `[...gen()]` -- drain a cursor to completion into a fresh array.
  *
  * The sibling of `appendSetRange`/`appendCodePointRange`/`appendMapRange` for

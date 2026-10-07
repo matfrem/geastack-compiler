@@ -32,13 +32,13 @@ The loops are `for (;;)` with `break`/`continue` today (`emit-loops.ts`). In the
 123 start with a bare test and 183 walk an array. The 123 are mostly TypeScript `for (let i = 0; i < n; i++)`: the
 step is at the end of the body (`x = x + 1; continue;`) and the initialiser just before the loop.
 
-1. **Counted `for`**: `long long x = 0; for (;;) { if (!(x < n)) break; { ... x = x + 1; continue; } }` becomes
+1. **Counted `for`** (done, `bca759b`): `long long x = 0; for (;;) { if (!(x < n)) break; { ... x = x + 1; continue; } }` becomes
    `for (long long x = 0; x < n; ++x) { ... }`. Conditions: the first statement is the exit test, the last statement
    before the loop's end is `V = V + 1` / `V = V - 1` / `V = V + K` on a name the test reads, no label or goto targets
    that step (a source `continue` makes the emitter share one step block: leave those), and the initialiser moves into the
    `for` only if the name is not mentioned after the loop.
-2. **`while (cond)`** for the loops that start with a bare test but have no recognisable step.
-3. **Array iteration**: the `LocalArrayCursor` + `arrayNext()` + `done()` loops (183) as a range-for or a cursor loop;
+2. **`while (cond)`** (done, `bca759b`) for the loops that start with a bare test but have no recognisable step.
+3. **Array iteration** (done: `for (T item : gItems(cursor))`, `gea::cursorRange` in the runtime): the `LocalArrayCursor` + `arrayNext()` + `done()` loops (183) as a range-for or a cursor loop;
    check that `arrayNext` before `done` keeps its meaning on holes and on a body that grows the array.
 4. **Loops with a source `continue`**: the shared step block (`block2: i = i + 1; continue;` reached by several gotos)
    written as a counted `for` whose `continue` runs the step.

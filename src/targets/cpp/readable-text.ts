@@ -706,9 +706,11 @@ export const simplifyConditions = (text: string): string => {
 /** Every text-level respelling of a unit, in the order that lets each one see what the one before it made. */
 export const makeReadable = (text: string): string =>
   nameValues(
-    reconstructLoops(
-      mergeDeclarations(
-        indentBlocks(simplifyConditions(unwrapRedundantParentheses(dropDefaultedAttributes(foldThrowHelpers(foldDoubleCasts(text))))))
+    foldRangeVariables(
+      reconstructLoops(
+        mergeDeclarations(
+          indentBlocks(simplifyConditions(unwrapRedundantParentheses(dropDefaultedAttributes(foldThrowHelpers(foldDoubleCasts(text))))))
+        )
       )
     )
   )
@@ -795,7 +797,8 @@ const reconstructLoopsInFunction = (original: readonly string[]): string[] => {
   for (let k = lines.length - 1; k >= 0; k -= 1) {
     if (lines[k]!.trim() !== 'for (;;) {') continue
     const end = closeOf(k)
-    const test = continuationOf((lines[k + 1] ?? '').trim())
+    const cursor = end < 0 ? null : cursorLoopOf(lines, k, end)
+    const test = cursor === null ? continuationOf((lines[k + 1] ?? '').trim()) : ''
     if (end < 0 || test === null) continue
     const indent = lines[k]!.slice(0, lines[k]!.length - lines[k]!.trimStart().length)
     // The last statement of the body, past the braces that close the blocks it is nested in.
@@ -821,19 +824,27 @@ const reconstructLoopsInFunction = (original: readonly string[]): string[] => {
     }
     const testTokens = new Set<string>()
     eachIdentifier(test, (token, at) => (isMemberOrQualified(test, at) ? undefined : testTokens.add(token)))
-    const counted = step !== null && testTokens.has(step.variable) && !strays()
+    const counted = cursor === null && step !== null && testTokens.has(step.variable) && !strays()
     const header = counted
       ? loopHeader(lines, k, end, test, step as { readonly variable: string; readonly text: string })
       : { init: '', removeInit: -1 }
-    const keyword = counted ? `for (${header.init}; ${test}; ${(step as { text: string }).text})` : `while (${test})`
-    const removed = new Set<number>([k + 1])
+    const keyword =
+      cursor !== null
+        ? `for (${cursor.type} ${cursor.item} : gItems(${cursor.cursor}))`
+        : counted
+          ? `for (${header.init}; ${test}; ${(step as { text: string }).text})`
+          : `while (${test})`
+    const removed = new Set<number>(cursor === null ? [k + 1] : [k + 1, k + 2, k + 3])
     if (counted) {
       removed.add(last)
       removed.add(last - 1)
     }
+    // The `continue` that ends a range-for body goes where the body's end goes.
+    if (cursor !== null && last > k + 3 && lines[last]!.trim() === 'continue;' && !isLabelStatement((lines[last - 1] ?? '').trim()))
+      removed.add(last)
     if (header.removeInit >= 0) removed.add(header.removeInit)
     // The body is one block (`{ ... }`) the test and the step sit around: it is the loop body itself.
-    const first = k + 2
+    const first = cursor === null ? k + 2 : k + 4
     let flattened = false
     if (lines[first]?.trim() === '{') {
       const depth = (shapes as LineShape[])[first]!.after
@@ -899,4 +910,94 @@ const loopHeader = (
     return { init: `${type} ${variable} = ${init}`, removeInit: at }
   }
   return none
+}
+
+/**
+ * The loop header `T item = cursor.arrayNext(); bool done = cursor.done(); if (done) break;`: the three statements that
+ * start a loop over a cursor, where `done` is named nowhere else in the loop.
+ */
+const cursorLoopOf = (
+  lines: readonly string[],
+  loop: number,
+  end: number
+): { readonly type: string; readonly item: string; readonly cursor: string } | null => {
+  const next = (lines[loop + 1] ?? '').trim()
+  const done = (lines[loop + 2] ?? '').trim()
+  const exit = (lines[loop + 3] ?? '').trim()
+  const call = '.arrayNext();'
+  if (!next.endsWith(call)) return null
+  const equals = next.indexOf(' = ')
+  const left = next.slice(0, equals)
+  const split = left.lastIndexOf(' ')
+  const cursor = next.slice(equals + 3, next.length - call.length)
+  if (equals <= 0 || split <= 0 || cursor === '' || ![...cursor].every(isIdentifierCharacter)) return null
+  const item = left.slice(split + 1)
+  if (item === '' || ![...item].every(isIdentifierCharacter)) return null
+  const prefix = 'bool '
+  const suffix = ` = ${cursor}.done();`
+  if (!done.startsWith(prefix) || !done.endsWith(suffix)) return null
+  const flag = done.slice(prefix.length, done.length - suffix.length)
+  if (flag === '' || ![...flag].every(isIdentifierCharacter) || exit !== `if (${flag}) break;`) return null
+  for (let at = loop + 4; at < end; at += 1) {
+    let named = false
+    eachIdentifier(lines[at]!, (token, start) => {
+      if (token === flag && !isMemberOrQualified(lines[at]!, start)) named = true
+    })
+    if (named) return null
+  }
+  return { type: left.slice(0, split), item, cursor }
+}
+
+/**
+ * `for (T v1 : gItems(c)) { T item = std::move(v1); ...` as `for (T item : gItems(c)) { ...`: the loop variable is
+ * named by the first statement of the body, which only moves it into the name the source gave it. Two spellings of
+ * that statement (`T x = std::move(v1);` and `T x; assignString(x, std::move(v1));`), and only when `v1` is named
+ * nowhere else in the loop.
+ */
+export const foldRangeVariables = (text: string): string => {
+  const lines = text.split('\n')
+  const removed = new Set<number>()
+  const renamed = new Map<number, string>()
+  for (let k = 0; k < lines.length; k += 1) {
+    const trimmed = lines[k]!.trim()
+    const marker = ' : gItems('
+    const at = trimmed.indexOf(marker)
+    if (!trimmed.startsWith('for (') || at < 0 || !trimmed.endsWith(') {')) continue
+    const left = trimmed.slice(5, at)
+    const split = left.lastIndexOf(' ')
+    if (split <= 0) continue
+    const type = left.slice(0, split)
+    const item = left.slice(split + 1)
+    const indent = lines[k]!.length - lines[k]!.trimStart().length
+    let end = k + 1
+    while (end < lines.length && !(lines[end] === `${' '.repeat(indent)}}`)) end += 1
+    if (end >= lines.length) continue
+    const first = (lines[k + 1] ?? '').trim()
+    const moved = `std::move(${item})`
+    let name = ''
+    let consumed = 0
+    if (first.startsWith(`${type} `) && first.endsWith(` = ${moved};`)) {
+      name = first.slice(type.length + 1, first.length - ` = ${moved};`.length)
+      consumed = 1
+    } else if (first.startsWith(`${type} `) && first.endsWith(';') && !first.includes(' = ')) {
+      name = first.slice(type.length + 1, -1)
+      const second = (lines[k + 2] ?? '').trim()
+      if (second === `gea::detail::assignString(${name}, ${moved});`) consumed = 2
+    }
+    if (consumed === 0 || name === '' || ![...name].every(isIdentifierCharacter)) continue
+    let namedElsewhere = false
+    for (let body = k + 1 + consumed; body < end && !namedElsewhere; body += 1)
+      eachIdentifier(lines[body]!, (token, start) => {
+        if (token === item && !isMemberOrQualified(lines[body]!, start)) namedElsewhere = true
+      })
+    if (namedElsewhere) continue
+    for (let body = k + 1; body < k + 1 + consumed; body += 1) removed.add(body)
+    renamed.set(k, `${lines[k]!.slice(0, indent)}for (${type} ${name}${trimmed.slice(at)}`)
+  }
+  return removed.size === 0 && renamed.size === 0
+    ? text
+    : lines
+        .map((line, index) => renamed.get(index) ?? line)
+        .filter((_, index) => !removed.has(index))
+        .join('\n')
 }
