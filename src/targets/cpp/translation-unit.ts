@@ -52,6 +52,7 @@ import {
   mergeDeclarations,
   nameBodyBindings,
   nameBodyParameters,
+  nameValues,
   unwrapRedundantParentheses
 } from './readable-text.js'
 import { createCppDocumentBuilder, emptyCppFacts, render, spliceRendered, type CppArtifact, type RenderedCppSource } from './document.js'
@@ -1874,7 +1875,9 @@ export const renderTranslationUnit = (input: CppTranslationUnitInput): CppTransl
     // renames it too, in the one pass that keeps the decision whole.
     const renamed = renameAll(result.units.map((unit) => unit.source)).map((text) =>
       withTypeAliases(
-        mergeDeclarations(indentBlocks(unwrapRedundantParentheses(dropDefaultedAttributes(foldThrowHelpers(foldDoubleCasts(text))))))
+        nameValues(
+          mergeDeclarations(indentBlocks(unwrapRedundantParentheses(dropDefaultedAttributes(foldThrowHelpers(foldDoubleCasts(text))))))
+        )
       )
     )
     const units = result.units.map((unit, index) => ({ ...unit, source: renamed[index] as RenderedCppSource }))

@@ -602,3 +602,87 @@ export const displayPathsOf = (files: readonly string[]): ((file: string) => str
     return root !== '' && path.startsWith(root) ? path.slice(root.length) : path
   }
 }
+
+/** The word a value's initialiser says it is: the member it reads (`gea_this->hugT`, `b2.x`) or the function it calls (`gea::runtime::string::trim(s)`). */
+const wordOfInitialiser = (expression: string): string | null => {
+  const text = expression.trim()
+  if (text === '') return null
+  // `a->b`, `a.b`, `*a.b`: one access path and nothing else.
+  const lastDot = Math.max(text.lastIndexOf('.'), text.lastIndexOf('>'))
+  const member = text.slice(lastDot + 1)
+  if (lastDot > 0 && [...member].every(isIdentifierCharacter) && member !== '' && !member.startsWith('gea_')) {
+    const owner = text.slice(0, lastDot + (text[lastDot] === '>' ? -1 : 0))
+    if (owner !== '' && [...owner].every((character) => isIdentifierCharacter(character) || '.:-*&'.includes(character))) return member
+  }
+  // `gea::makeRef<GrPose>()`: a new record or class instance, named by its type.
+  const made = text.indexOf('makeRef<Gr') >= 0 ? text.indexOf('makeRef<Gr') : text.indexOf('makeRef<Gc')
+  if (made >= 0 && text.slice(0, made) === 'gea::' && text.endsWith('>()')) {
+    const label = text.slice(made + 'makeRef<Gr'.length, text.length - 3)
+    if (label !== '' && [...label].every(isIdentifierCharacter)) return label[0]!.toLowerCase() + label.slice(1)
+  }
+  // `ns::name(arguments)`: a call, named by its last qualified part.
+  const open = text.indexOf('(')
+  if (open > 0 && text.endsWith(')') && matchingParenthesis(text, open) === text.length - 1) {
+    const callee = text.slice(0, open)
+    if (![...callee].every((character) => isIdentifierCharacter(character) || character === ':')) return null
+    const name = callee.slice(callee.lastIndexOf(':') + 1)
+    if (name === '' || name.startsWith('gea_') || name === 'move' || name === 'forward' || name === 'static_cast') return null
+    return name === 'fabs' ? 'abs' : name
+  }
+  return null
+}
+
+/**
+ * `double v46 = b20 / v47;` keeps its SSA number but says what it holds: `v46` stays when the initialiser says
+ * nothing, and becomes `abs46` or `hugT46` when it is a call or a member read. The number stays because it is
+ * what keeps two values of one function apart; the word is only for the reader.
+ *
+ * A name is taken only if nothing else in the function already uses it. Applied per function, since `vN` restarts in
+ * each, and only to values declared with an initialiser on one line.
+ */
+export const nameValues = (text: string): string => {
+  const lines = text.split('\n')
+  let functionStart = -1
+  const renamedLines = new Map<number, string>()
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] as string
+    if (functionStart < 0) {
+      if (line !== '' && line[0] !== ' ' && line[0] !== '}' && line[0] !== '#' && line.endsWith(' {')) functionStart = index
+      continue
+    }
+    if (line !== '}') continue
+    const first = functionStart
+    functionStart = -1
+    const range = lines.slice(first, index + 1)
+    const used = new Set<string>()
+    for (const entry of range) eachIdentifier(entry, (token, start) => (isMemberOrQualified(entry, start) ? undefined : used.add(token)))
+    const chosen = new Map<string, string>()
+    for (const entry of range) {
+      const trimmed = entry.trim()
+      const equals = trimmed.indexOf(' = ')
+      if (equals < 0 || !trimmed.endsWith(';')) continue
+      const left = trimmed.slice(0, equals)
+      const split = left.lastIndexOf(' ')
+      const cell = left.slice(split + 1)
+      if (split < 0 || cell[0] !== 'v' || !isDigits(cell.slice(1)) || chosen.has(cell)) continue
+      const word = wordOfInitialiser(trimmed.slice(equals + 3, -1))
+      const name = word === null ? null : `${word}${cell.slice(1)}`
+      if (name === null || used.has(name) || !parameterNameIsSafe(name)) continue
+      used.add(name)
+      chosen.set(cell, name)
+    }
+    if (chosen.size === 0) continue
+    range.forEach((entry, offset) => {
+      let result = ''
+      let copied = 0
+      eachIdentifier(entry, (token, start, end) => {
+        const replacement = chosen.get(token)
+        if (replacement === undefined || isMemberOrQualified(entry, start)) return
+        result += entry.slice(copied, start) + replacement
+        copied = end
+      })
+      if (copied !== 0) renamedLines.set(first + offset, result + entry.slice(copied))
+    })
+  }
+  return renamedLines.size === 0 ? text : lines.map((line, index) => renamedLines.get(index) ?? line).join('\n')
+}
