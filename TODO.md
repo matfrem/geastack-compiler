@@ -45,12 +45,11 @@ step is at the end of the body (`x = x + 1; continue;`) and the initialiser just
 5. **Trailing `continue;`** (done) dropped when it is the last statement of the loop body (only for the ones the printer
    wrote, never one inside a C++ loop the block text spells itself).
 
-## 2. The runtime containers and `gea::Ref` (agreed, "plus tard")
+## 2. The runtime containers and `gea::Ref` (done: see `docs/CONTAINERS-REVIEW.md`)
 
-Most heavily used containers hold `Ref`s. On every add and remove look for shortcuts: a move instead of a retain/release
-pair, moved-from slots left behind, tombstones, batch operations. Review `ArrayObject`, `Dictionary`,
-`NumericDictionary`, `SymbolDictionary`, the iterators, `Optional<Ref<T>>`, and how `Ref` copies and releases are spelled
-in generated code. Map and Set are done (hash index `ae20a74`, O(1) removal `fefdb3c`).
+Reviewed with measurements. Map and Set were the real finding (hash index `ae20a74`, O(1) removal `fefdb3c`); array push of a
+`Ref` is 4% faster moved than copied, so the printer is not taught to move; the review lists what a follow-up would do
+(element reads by reference, backward-shift deletion in `Dictionary`, amortised `shift`).
 
 ## 3. Confirmed in advance by the user: do them without asking
 
