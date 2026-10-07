@@ -1,3 +1,4 @@
+import { structuredJumpsIn } from './emit-loops.js'
 import { cppRecordFieldName } from './types.js'
 
 /**
@@ -739,7 +740,11 @@ const continuationOf = (trimmed: string): string | null => {
   const tail = ') break;'
   if (!trimmed.startsWith('if (') || !trimmed.endsWith(tail)) return null
   const test = trimmed.slice(4, trimmed.length - tail.length)
-  if (test === '') return null
+  return test === '' ? null : negated(test)
+}
+
+/** The condition that is true when `test` is false, without piling up negations. */
+const negated = (test: string): string => {
   if (test[0] === '!') {
     const rest = test.slice(1)
     if (rest[0] === '(' && matchingParenthesis(rest, 0) === rest.length - 1) return rest.slice(1, -1)
@@ -773,7 +778,7 @@ export const reconstructLoops = (text: string): string => {
       continue
     }
     if (line !== '}') continue
-    out.push(...reconstructLoopsInFunction(lines.slice(start, index + 1)))
+    out.push(...dropTrailingContinues(foldSkips(reconstructLoopsInFunction(lines.slice(start, index + 1)))))
     start = -1
   }
   // A function left open at the end of the text is written as it was.
@@ -807,6 +812,20 @@ const reconstructLoopsInFunction = (original: readonly string[]): string[] => {
     let step: { readonly variable: string; readonly text: string } | null = null
     if (last - 1 > k + 1 && lines[last]!.trim() === 'continue;' && !isLabelStatement((lines[last - 2] ?? '').trim()))
       step = stepOf(lines[last - 1]!.trim())
+    // A source `continue` makes the printer share one step block -- `L: i = i + 1; continue;` -- that every continue jumps to.
+    let shared: { readonly at: number; readonly label: string } | null = null
+    if (step === null) {
+      const found: { readonly at: number; readonly label: string }[] = []
+      for (let at = k + 2; at + 2 < end; at += 1) {
+        const label = labelDefinedBy(lines[at]!.trim())
+        if (label !== null && stepOf((lines[at + 1] ?? '').trim()) !== null && (lines[at + 2] ?? '').trim() === 'continue;')
+          found.push({ at, label })
+      }
+      if (found.length === 1) {
+        shared = found[0]!
+        step = stepOf(lines[shared.at + 1]!.trim())
+      }
+    }
     // Another `continue` at this loop's level would, with a step, skip it no longer.
     const strays = (): boolean => {
       for (let at = k + 2; at < end; at += 1) {
@@ -818,13 +837,19 @@ const reconstructLoopsInFunction = (original: readonly string[]): string[] => {
           at = close
           continue
         }
-        if (trimmed.includes('continue;') && !(step !== null && at === last)) return true
+        if (trimmed.includes('continue;') && !(step !== null && (at === last || (shared !== null && at === shared.at + 2)))) return true
       }
       return false
     }
     const testTokens = new Set<string>()
     eachIdentifier(test, (token, at) => (isMemberOrQualified(test, at) ? undefined : testTokens.add(token)))
-    const counted = cursor === null && step !== null && testTokens.has(step.variable) && !strays()
+    // Every jump to the shared step block is a `continue` of the `for`, which runs its step.
+    let sharedBody: string[] | null = null
+    if (shared !== null && cursor === null && step !== null && testTokens.has(step.variable) && !strays()) {
+      const converted = structuredJumpsIn(lines.slice(k + 1, end).join('\n'), shared.label, null).split('\n')
+      if (!converted.some((line) => gotoTargetsInLine(line).includes((shared as { label: string }).label))) sharedBody = converted
+    }
+    const counted = cursor === null && step !== null && testTokens.has(step.variable) && (shared === null ? !strays() : sharedBody !== null)
     const header = counted
       ? loopHeader(lines, k, end, test, step as { readonly variable: string; readonly text: string })
       : { init: '', removeInit: -1 }
@@ -835,7 +860,10 @@ const reconstructLoopsInFunction = (original: readonly string[]): string[] => {
           ? `for (${header.init}; ${test}; ${(step as { text: string }).text})`
           : `while (${test})`
     const removed = new Set<number>(cursor === null ? [k + 1] : [k + 1, k + 2, k + 3])
-    if (counted) {
+    if (counted && shared !== null) {
+      removed.add(shared.at)
+      removed.add(shared.at + 1)
+    } else if (counted) {
       removed.add(last)
       removed.add(last - 1)
     }
@@ -860,7 +888,10 @@ const reconstructLoopsInFunction = (original: readonly string[]): string[] => {
     lines.forEach((line, at) => {
       if (removed.has(at)) return
       if (at === k) rewritten.push(`${indent}${keyword} {`)
-      else if (flattened && at > first && at < end - 1) rewritten.push(line.startsWith('  ') ? line.slice(2) : line)
+      else if (counted && sharedBody !== null && at > k && at < end) {
+        const body = sharedBody[at - k - 1] as string
+        rewritten.push(flattened && at > first && at < end - 1 && body.startsWith('  ') ? body.slice(2) : body)
+      } else if (flattened && at > first && at < end - 1) rewritten.push(line.startsWith('  ') ? line.slice(2) : line)
       else rewritten.push(line)
     })
     lines = rewritten
@@ -1000,4 +1031,55 @@ export const foldRangeVariables = (text: string): string => {
         .map((line, index) => renamed.get(index) ?? line)
         .filter((_, index) => !removed.has(index))
         .join('\n')
+}
+
+/**
+ * `if (x) goto L; continue; L:` as `if (!x) continue;` (or `break;`): a jump over a single `continue` or `break`, to
+ * a label nothing else in the function jumps to.
+ */
+const foldSkips = (lines: string[]): string[] => {
+  const references = new Map<string, number>()
+  for (const line of lines) for (const target of gotoTargetsInLine(line)) references.set(target, (references.get(target) ?? 0) + 1)
+  if (![...references.values()].some((count) => count === 1)) return lines
+  const out: string[] = []
+  for (let at = 0; at < lines.length; at += 1) {
+    const line = lines[at]!
+    const trimmed = line.trim()
+    const split = trimmed.lastIndexOf(') goto ')
+    if (trimmed.startsWith('if (') && trimmed.endsWith(';') && split > 0) {
+      const target = trimmed.slice(split + 7, -1)
+      const leave = (lines[at + 1] ?? '').trim()
+      if ((leave === 'continue;' || leave === 'break;') && (lines[at + 2] ?? '').trim() === `${target}:` && references.get(target) === 1) {
+        out.push(`${line.slice(0, line.length - line.trimStart().length)}if (${negated(trimmed.slice(4, split))}) ${leave}`)
+        at += 2
+        continue
+      }
+    }
+    out.push(line)
+  }
+  return out
+}
+
+/**
+ * A `continue;` that ends a loop's body, past the braces closing the blocks it sits in, goes where the end of the
+ * body goes, so it is dropped. That holds for any loop, and for the `continue` of whichever loop it binds to: the
+ * line after it is the end of that body. Only a run of plain `}` lines counts; `} while (...)`, `} else {` and `case`
+ * labels after it mean something runs next.
+ */
+const dropTrailingContinues = (lines: string[]): string[] => {
+  const shapes = shapesOfLines(lines)
+  if (shapes === null || !lines.some((line) => line.trim() === 'continue;')) return lines
+  const removed = new Set<number>()
+  lines.forEach((line, open) => {
+    const trimmed = line.trim()
+    if (!(trimmed.startsWith('for (') || trimmed.startsWith('while (')) || !trimmed.endsWith(') {')) return
+    const depth = shapes[open]!.after
+    let close = open + 1
+    while (close < lines.length && (shapes[close]!.skipped || shapes[close]!.level >= depth)) close += 1
+    if (close >= lines.length) return
+    let last = close - 1
+    while (last > open && lines[last]!.trim() === '}') last -= 1
+    if (last > open && lines[last]!.trim() === 'continue;' && !isLabelStatement((lines[last - 1] ?? '').trim())) removed.add(last)
+  })
+  return removed.size === 0 ? lines : lines.filter((_, index) => !removed.has(index))
 }

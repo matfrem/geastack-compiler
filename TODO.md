@@ -40,9 +40,9 @@ step is at the end of the body (`x = x + 1; continue;`) and the initialiser just
 2. **`while (cond)`** (done, `bca759b`) for the loops that start with a bare test but have no recognisable step.
 3. **Array iteration** (done: `for (T item : gItems(cursor))`, `gea::cursorRange` in the runtime): the `LocalArrayCursor` + `arrayNext()` + `done()` loops (183) as a range-for or a cursor loop;
    check that `arrayNext` before `done` keeps its meaning on holes and on a body that grows the array.
-4. **Loops with a source `continue`**: the shared step block (`block2: i = i + 1; continue;` reached by several gotos)
+4. **Loops with a source `continue`** (done): the shared step block (`block2: i = i + 1; continue;` reached by several gotos)
    written as a counted `for` whose `continue` runs the step.
-5. **Trailing `continue;`** dropped when it is the last statement of the loop body (only for the ones the printer
+5. **Trailing `continue;`** (done) dropped when it is the last statement of the loop body (only for the ones the printer
    wrote, never one inside a C++ loop the block text spells itself).
 
 ## 2. The runtime containers and `gea::Ref` (agreed, "plus tard")
