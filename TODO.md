@@ -69,7 +69,7 @@ In this order, after sections 1 and 2. The gate baselines (old item 6) are *not*
    input") and an optional method read as a value (`this.cfg.savedAt?.(data)`) are refused.
 7. **Fix `var` declared in a function with a `switch`/try region** if the pinned-scope fix is ever found not to reach the
    region layout (`regionScopedBlocksOf` passes `pinned`, but no test covers it).
-8. **Tests for the `--short-names` passes** (`readable-text.ts`, `identifier-names.ts`, `emit-loops.ts`) as unit tests
+8. **Tests for the `--short-names` passes** (done, `test/readable-text.mjs`, in the build chain) (`readable-text.ts`, `identifier-names.ts`, `emit-loops.ts`) as unit tests
    next to the code, so they do not depend on the Bioustopia snapshot.
 
 ## Postponed (user: "on verra après")
