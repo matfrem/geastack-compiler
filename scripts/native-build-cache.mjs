@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { readFileSync, writeFileSync, existsSync, accessSync, constants } from 'node:fs'
 import { join, delimiter } from 'node:path'
 import { performance } from 'node:perf_hooks'
+import { executableSuffix } from '../test/executable-suffix.mjs'
 
 const digest = (value) => createHash('sha256').update(value).digest('hex')
 const executableOnPath = (name) => {
@@ -25,9 +26,13 @@ const run = (command, args, env = process.env) => {
 
 // Decode Make dependency output, including spaces escaped by Clang. Include
 // system headers: changing an SDK must invalidate a PCH as well as our header.
+//
+// Two things a Windows path would break. The target ends at the first colon FOLLOWED BY WHITESPACE, not the first
+// colon (`C:\out\a.o: C:\out\a.cpp` has a drive colon before it). And a backslash only escapes what Make escapes -- a
+// space or a `#` -- so the separators of `C:\out\gea_runtime.h` are kept instead of eaten.
 const dependencies = (text) => {
-  const body = text.replace(/\\\r?\n/g, '').replace(/^[^:]*:\s*/, '')
-  return [...new Set((body.match(/(?:\\.|[^\s])+/g) ?? []).map((word) => word.replace(/\\(.)/g, '$1').replace(/\$\$/g, '$')))]
+  const body = text.replace(/\\\r?\n/g, '').replace(/^.*?:\s+/, '')
+  return [...new Set((body.match(/(?:\\.|[^\s])+/g) ?? []).map((word) => word.replace(/\\([ #])/g, '$1').replace(/\$\$/g, '$')))]
 }
 
 /** Build objects separately so ccache can cache them; linking is never cached.
@@ -112,7 +117,7 @@ export function buildNative({
     })
     const compileMs = performance.now() - compileStarted
     const linkStarted = performance.now()
-    run(cxx, ['-g', '-O0', ...objects, '-o', join(out, 'program')])
+    run(cxx, ['-g', '-O0', ...objects, '-o', join(out, `program${executableSuffix}`)])
     return {
       pch: pchState,
       launcher: launcher ?? 'none',

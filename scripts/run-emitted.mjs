@@ -1,4 +1,5 @@
 import { nativeHostIncludes } from './native-host-includes.mjs'
+import { executableSuffix } from '../test/executable-suffix.mjs'
 /**
  * Compile a TypeScript program with geatsc, LINK it, and RUN it.
  *
@@ -167,7 +168,7 @@ if (compileOnly) {
   console.error('COMPILED OK')
   process.exit(0)
 }
-const binary = join(out, 'program')
+const binary = join(out, `program${executableSuffix}`)
 
 const ran = spawnSync(binary, { encoding: 'utf8' })
 process.stdout.write(ran.stdout ?? '')

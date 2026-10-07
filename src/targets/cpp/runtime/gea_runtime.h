@@ -30280,7 +30280,20 @@ struct Pattern {
   std::regex::flag_type stdFlags() const {
     auto value = std::regex::ECMAScript;
     if (ignoreCase) value |= std::regex::icase;
-    if (multiline) value |= std::regex_constants::multiline;
+    if (multiline) {
+      // `std::regex_constants::multiline` is C++17 but not every standard library has it (Visual Studio 2022's did not).
+      // Without it `^` and `$` cannot be made to match at line breaks, and matching as if the flag were absent would
+      // be a wrong answer with no sign of it, so the program stops here instead.
+      const auto addMultiline = [&value](auto regexType) {
+        using Regex = typename decltype(regexType)::type;
+        if constexpr (requires { Regex::multiline; }) {
+          value |= Regex::multiline;
+        } else {
+          gea::host::throwRuntimeError("SyntaxError", "the multiline (m) regular-expression flag needs std::regex_constants::multiline, which this standard library does not provide");
+        }
+      };
+      addMultiline(std::type_identity<std::regex>{});
+    }
     return value;
   }
 

@@ -55,7 +55,7 @@ Reviewed with measurements. Map and Set were the real finding (hash index `ae20a
 
 In this order, after sections 1 and 2. The gate baselines (old item 6) are *not* in this list: see "Postponed".
 
-1. **Portability of `gea_runtime.h`**: `std::regex_constants::multiline` is missing from VS2022's STL, which stops
+1. **Portability of `gea_runtime.h`** (done): `std::regex_constants::multiline` is missing from VS2022's STL, which stops
    `scripts/check-runtime-header.mjs` and the runtime suite on this machine. A feature test around it. (Small; also lets
    the harness drop its shim.)
 2. **Report to the main repo**: nothing to do. The `let`/`var` fixes (`9abd76d`, `b62b855`) are written up as a bug report and the user sends it.
