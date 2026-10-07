@@ -52,7 +52,8 @@ const ownNameOf = (declaration: ts.Declaration): string | null => {
     ts.isFunctionDeclaration(declaration)
   )
     return declaration.name === undefined ? null : declaration.name.text
-  if (ts.isVariableDeclaration(declaration)) return ts.isIdentifier(declaration.name) ? declaration.name.text : null
+  if (ts.isVariableDeclaration(declaration) || ts.isParameter(declaration) || ts.isBindingElement(declaration))
+    return ts.isIdentifier(declaration.name) ? declaration.name.text : null
   if (ts.isConstructorDeclaration(declaration)) {
     const owner = declaration.parent.name?.text
     return owner === undefined ? null : `${owner}_constructor`

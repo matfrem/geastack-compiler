@@ -2565,7 +2565,9 @@ export const emitBody = (
   definitionCells: ReadonlySet<DeclarationId> = new Set(),
   constructionOnlyFields: ConstructionOnlyFields = noConstructionOnlyFields,
   keyOrderUnobserved: ReadonlySet<string> = new Set(),
-  taskBodies: ReadonlySet<string> = new Set()
+  taskBodies: ReadonlySet<string> = new Set(),
+  // Filled with the name each binding cell took (`b3`), for a caller that wants to say what it was in the source.
+  bindingNamesOut: Map<DeclarationId, string> | undefined = undefined
 ): readonly CppArtifact[] => {
   // Every fact this body settles before a single line renders, computed here
   // -- from `body` and the plain, already-available inputs above -- and
@@ -3291,6 +3293,7 @@ export const emitBody = (
     facts: declarationFacts
   }
   const prologue: CppArtifact[] = entryPrologue.length === 0 ? [] : [{ text: entryPrologue.join('\n'), facts: declarationFacts }]
+  if (bindingNamesOut !== undefined) for (const [declaration, name] of ctx.bindingNames) bindingNamesOut.set(declaration, name)
   // 27.7.5.1 AsyncFunctionStart: an async body's abrupt completion REJECTS its
   // promise; it never propagates out of the call. An async COROUTINE gets that
   // from its promise type's `unhandled_exception`, and a `return` inside one

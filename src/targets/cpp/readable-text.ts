@@ -240,3 +240,247 @@ export const nameBodyParameters = (texts: readonly string[], names: readonly (st
     return copied === 0 ? text : result + text.slice(copied)
   })
 }
+
+const firstIndexOfAny = (text: string, characters: string, from: number): number => {
+  for (let index = from; index < text.length; index += 1) if (characters.includes(text[index] as string)) return index
+  return -1
+}
+
+/** What a binding cell of the given C++ type holds, as a word, for a cell the source did not name. */
+const prefixOfType = (type: string): string | null => {
+  if (type === 'double' || type === 'float') return 'num'
+  if (type === 'long long' || type === 'int') return 'int'
+  if (type === 'bool') return 'flag'
+  if (type === 'gString') return 'str'
+  if (type === 'gValue') return 'val'
+  if (type.startsWith('gRef<gArray<') || type.startsWith('gRef<gTypedArray<')) return 'arr'
+  if (type.startsWith('gRef<gDictionary<')) return 'dict'
+  if (type.startsWith('gRef<gMap<')) return 'map'
+  if (type.startsWith('gRef<gSet<')) return 'set'
+  if (type.startsWith('gCallable<')) return 'fn'
+  if (type.startsWith('gOptional<')) return 'opt'
+  if (type.startsWith('gVector<')) return 'vec'
+  if (type.startsWith('gRef<Gr') || type.startsWith('gRef<Gc')) {
+    const start = 'gRef<Gr'.length
+    const end = firstIndexOfAny(type, '<>,', start)
+    const label = type.slice(start, end < 0 ? undefined : end)
+    return label === '' || !isIdentifierCharacter(label[0]) ? null : label[0]!.toLowerCase() + label.slice(1)
+  }
+  return null
+}
+
+/**
+ * The texts of ONE body with each binding cell (`b22`) spelled as the variable it was in the source, or, for
+ * a cell the source did not name, as a word for what it holds and its ordinal (`num22`, `arr1`, `fn26`).
+ *
+ * A source name is taken only when nothing in the body already uses it and no earlier cell took it, so two
+ * variables that shadowed each other in the source stay two variables here. A cell whose declaration line
+ * cannot be found keeps its `bN`.
+ */
+export const nameBodyBindings = (texts: readonly string[], bindings: ReadonlyMap<string, string | null>): readonly string[] => {
+  if (bindings.size === 0) return texts
+  const used = new Set<string>()
+  for (const text of texts) eachIdentifier(text, (token, start) => (isMemberOrQualified(text, start) ? undefined : used.add(token)))
+  // The type each cell was declared with: `<type> b22;` on a line of its own.
+  const typeOf = new Map<string, string>()
+  for (const text of texts) {
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed.endsWith(';') || trimmed.includes(' = ')) continue
+      const split = trimmed.lastIndexOf(' ')
+      if (split < 0) continue
+      const cell = trimmed.slice(split + 1, -1)
+      if (bindings.has(cell) && !typeOf.has(cell)) typeOf.set(cell, trimmed.slice(0, split).trim())
+    }
+  }
+  const ordinalOf = (cell: string): string => cell.slice(1)
+  const chosen = new Map<string, string>()
+  const taken = new Set<string>()
+  const ordered = [...bindings].sort(([left], [right]) => Number(ordinalOf(left)) - Number(ordinalOf(right)))
+  for (const [cell, source] of ordered) {
+    if (!used.has(cell) || !typeOf.has(cell)) continue
+    const free = (name: string): boolean => !used.has(name) && !taken.has(name)
+    let name: string | null = null
+    if (source !== null && parameterNameIsSafe(source)) {
+      if (free(source)) name = source
+      else if (free(`${source}_${ordinalOf(cell)}`)) name = `${source}_${ordinalOf(cell)}`
+    }
+    if (name === null) {
+      const prefix = prefixOfType(typeOf.get(cell) as string)
+      const typed = prefix === null ? null : `${prefix}${ordinalOf(cell)}`
+      if (typed !== null && parameterNameIsSafe(typed) && free(typed)) name = typed
+    }
+    if (name === null) continue
+    taken.add(name)
+    chosen.set(cell, name)
+  }
+  if (chosen.size === 0) return texts
+  return texts.map((text) => {
+    let result = ''
+    let copied = 0
+    eachIdentifier(text, (token, start, end) => {
+      const replacement = chosen.get(token)
+      if (replacement === undefined || isMemberOrQualified(text, start)) return
+      result += text.slice(copied, start) + replacement
+      copied = end
+    })
+    return copied === 0 ? text : result + text.slice(copied)
+  })
+}
+
+const wordsBeforeParenthesisThatKeepItMeaningful = new Set([
+  'decltype',
+  'sizeof',
+  'alignof',
+  'alignas',
+  'typeid',
+  'noexcept',
+  'requires',
+  '__attribute__',
+  '__declspec',
+  'asm',
+  '__asm__'
+])
+
+/**
+ * `(x)` as `x` where `x` is one identifier or number and the parentheses cannot mean anything else, and
+ * `name = (a / b);` as `name = a / b;`.
+ *
+ * What the parentheses could mean otherwise is the whole list of reasons not to touch them: a call
+ * (`f(x)`), a cast (`(T)x`), `decltype((x))`, a template argument or `sizeof`. The test is on the characters
+ * around the pair, so a spelling it does not recognise is left exactly as it was.
+ */
+export const unwrapRedundantParentheses = (text: string): string => {
+  const unwrapAtoms = (input: string): string => {
+    let result = ''
+    let copied = 0
+    for (let index = 0; index < input.length; index += 1) {
+      const character = input[index]
+      if (character === '"' || character === "'") {
+        if (character === "'" && index > 0 && isIdentifierCharacter(input[index - 1])) continue
+        index += 1
+        while (index < input.length && input[index] !== character) index += input[index] === '\\' ? 2 : 1
+        continue
+      }
+      if (character !== '(') continue
+      let end = index + 1
+      while (end < input.length && isIdentifierCharacter(input[end])) end += 1
+      if (end === index + 1 || input[end] !== ')') continue
+      const atom = input.slice(index + 1, end)
+      const first = atom[0] as string
+      const numeric = first >= '0' && first <= '9'
+      // What comes before: an operator or a separator, never a name, a closing bracket or `>`.
+      let before = index - 1
+      while (before >= 0 && input[before] === ' ') before -= 1
+      const previous = before < 0 ? '' : (input[before] as string)
+      if (previous === '' || !'(,={;?:+-*/%&|^!~'.includes(previous)) continue
+      if (previous === '(') {
+        let word = before - 1
+        while (word >= 0 && input[word] === ' ') word -= 1
+        let wordStart = word
+        while (wordStart >= 0 && isIdentifierCharacter(input[wordStart])) wordStart -= 1
+        if (wordsBeforeParenthesisThatKeepItMeaningful.has(input.slice(wordStart + 1, word + 1))) continue
+      }
+      // What comes after: an operator or a separator, or a member access on a name. Not an operand (a cast).
+      let after = end + 1
+      while (after < input.length && input[after] === ' ') after += 1
+      const next = after < input.length ? (input[after] as string) : ''
+      const memberAccess = !numeric && (next === '.' || (next === '-' && input[after + 1] === '>') || next === '[')
+      if (!(memberAccess || next === '' || ')],;}+*/%<>=!&|^?:'.includes(next))) continue
+      result += input.slice(copied, index) + atom
+      copied = end + 1
+      index = end
+    }
+    return copied === 0 ? input : result + input.slice(copied)
+  }
+  const withoutAtoms = unwrapAtoms(unwrapAtoms(text))
+  return withoutAtoms
+    .split('\n')
+    .map((line) => {
+      const indent = line.length - line.trimStart().length
+      const body = line.slice(indent)
+      const equals = body.indexOf(' = (')
+      if (equals <= 0 || !body.endsWith(');')) return line
+      const name = body.slice(0, equals)
+      if (![...name].every(isIdentifierCharacter)) return line
+      const open = indent + equals + 3
+      if (matchingParenthesis(line, open) !== line.length - 2) return line
+      const inner = line.slice(open + 1, line.length - 2)
+      // A comma at the top level is the comma operator, which the parentheses keep from ending the statement.
+      let depth = 0
+      for (let index = 0; index < inner.length; index += 1) {
+        const character = inner[index] as string
+        if (character === '"' || character === "'") {
+          index += 1
+          while (index < inner.length && inner[index] !== character) index += inner[index] === '\\' ? 2 : 1
+        } else if ('([{<'.includes(character)) depth += 1
+        else if (')]}>'.includes(character)) depth -= 1
+        else if (character === ',' && depth <= 0) return line
+      }
+      return `${line.slice(0, open)}${inner};`
+    })
+    .join('\n')
+}
+
+const mergeableTypes = ['double ', 'long long ', 'bool ', 'int ', 'gString ', 'gRef<']
+
+/**
+ * `double x;` ... `x = a / b;` as `double x = a / b;`, in a function that has no `goto` or `switch`.
+ *
+ * Both ends must be at the same indentation (the same block), the assignment must be the first line that
+ * names the variable, and its right side must not name it. A `goto` (or a `case` label) may not jump past an
+ * initialised declaration, which is why the emitter hoists declarations to the top in the first place, so a
+ * function that has either is left alone. Only the types whose initialisation from another value is the
+ * same copy their assignment was are merged.
+ */
+export const mergeDeclarations = (text: string): string => {
+  const lines = text.split('\n')
+  const removed = new Set<number>()
+  let functionStart = -1
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] as string
+    if (functionStart < 0) {
+      if (line !== '' && line[0] !== ' ' && line[0] !== '}' && line[0] !== '#' && line.endsWith(' {')) functionStart = index
+      continue
+    }
+    if (line !== '}') continue
+    const first = functionStart
+    const range = lines.slice(functionStart, index + 1)
+    functionStart = -1
+    if (range.some((entry) => entry.includes('goto ') || entry.includes('switch (') || entry.trimStart().startsWith('case '))) continue
+    // Where each name occurs, as a line offset, ignoring members and qualified names.
+    const occurrences = new Map<string, number[]>()
+    range.forEach((entry, offset) =>
+      eachIdentifier(entry, (token, start) => {
+        if (isMemberOrQualified(entry, start)) return
+        const found = occurrences.get(token)
+        if (found === undefined) occurrences.set(token, [offset])
+        else if (found[found.length - 1] !== offset) found.push(offset)
+      })
+    )
+    range.forEach((entry, offset) => {
+      const indent = entry.length - entry.trimStart().length
+      const trimmed = entry.slice(indent)
+      if (indent === 0 || !trimmed.endsWith(';') || trimmed.includes(' = ') || !mergeableTypes.some((type) => trimmed.startsWith(type)))
+        return
+      const split = trimmed.lastIndexOf(' ')
+      const name = trimmed.slice(split + 1, -1)
+      if (name === '' || ![...name].every(isIdentifierCharacter)) return
+      const next = occurrences.get(name)?.find((candidate) => candidate > offset)
+      if (next === undefined) return
+      const user = range[next] as string
+      const userIndent = user.length - user.trimStart().length
+      const prefix = `${name} = `
+      if (userIndent !== indent || !user.slice(indent).startsWith(prefix) || !user.endsWith(';')) return
+      const right = user.slice(indent + prefix.length, -1)
+      let mentionsItself = false
+      eachIdentifier(right, (token, start) => {
+        if (token === name && !isMemberOrQualified(right, start)) mentionsItself = true
+      })
+      if (mentionsItself || removed.has(first + next)) return
+      lines[first + next] = `${' '.repeat(indent)}${trimmed.slice(0, split)} ${name} = ${right};`
+      removed.add(first + offset)
+    })
+  }
+  return removed.size === 0 ? text : lines.filter((_, index) => !removed.has(index)).join('\n')
+}

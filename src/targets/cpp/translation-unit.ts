@@ -41,8 +41,17 @@ import { hostCallName } from './host/host-members.js'
 import { reactiveBoundRecordFields, reactiveDependenciesOfBodies } from './reactive-dependencies.js'
 import { buildDirectCallableIndex, buildCaptureIndex } from './captures.js'
 import { createIdentifierRenamer } from './identifier-names.js'
-import { withTypeAliases } from './type-aliases.js'
-import { dropDefaultedAttributes, foldDoubleCasts, foldThrowHelpers, indentBlocks, nameBodyParameters } from './readable-text.js'
+import { abbreviateTypeSpellings, withTypeAliases } from './type-aliases.js'
+import {
+  dropDefaultedAttributes,
+  foldDoubleCasts,
+  foldThrowHelpers,
+  indentBlocks,
+  mergeDeclarations,
+  nameBodyBindings,
+  nameBodyParameters,
+  unwrapRedundantParentheses
+} from './readable-text.js'
 import { createCppDocumentBuilder, emptyCppFacts, render, spliceRendered, type CppArtifact, type RenderedCppSource } from './document.js'
 import { beginUnionAliasing, endUnionAliasing, cppNativeHandleTag } from './types.js'
 import {
@@ -1855,7 +1864,9 @@ export const renderTranslationUnit = (input: CppTranslationUnitInput): CppTransl
     // `source` is `units[0].source` under `single`, so renaming the units
     // renames it too, in the one pass that keeps the decision whole.
     const renamed = renameAll(result.units.map((unit) => unit.source)).map((text) =>
-      withTypeAliases(indentBlocks(dropDefaultedAttributes(foldThrowHelpers(foldDoubleCasts(text)))))
+      withTypeAliases(
+        mergeDeclarations(indentBlocks(unwrapRedundantParentheses(dropDefaultedAttributes(foldThrowHelpers(foldDoubleCasts(text))))))
+      )
     )
     const units = result.units.map((unit, index) => ({ ...unit, source: renamed[index] as RenderedCppSource }))
     return { ...result, source: result.source === null ? null : (units[0]?.source ?? null), units }
@@ -2899,17 +2910,22 @@ const renderTranslationUnitSession = (input: CppTranslationUnitInput): CppTransl
   const renderedBodies: RenderedBody[] = []
   // The parameter names a body's texts may use, when a build asked for them. Applied to ONE body's
   // texts at a time because `gea_arg_N` means a different parameter in every body.
-  const namedParameters = (body: IrBody, artifacts: readonly CppArtifact[]): readonly CppArtifact[] => {
-    if (input.shortNames !== true || !body.abi || isRegionId(body.sourceOwner)) return artifacts
-    const names = input.parameterNames.get(declarationOfFunction(body.sourceOwner))
-    if (names === undefined || names.length !== body.abi.parameters.length) return artifacts
-    const renamed = nameBodyParameters(
-      artifacts.map((artifact) => artifact.text),
-      names
+  const namedParameters = (
+    body: IrBody,
+    bindingNames: ReadonlyMap<DeclarationId, string>,
+    artifacts: readonly CppArtifact[]
+  ): readonly CppArtifact[] => {
+    if (input.shortNames !== true) return artifacts
+    let texts: readonly string[] = artifacts.map((artifact) => artifact.text)
+    if (body.abi && !isRegionId(body.sourceOwner)) {
+      const names = input.parameterNames.get(declarationOfFunction(body.sourceOwner))
+      if (names !== undefined && names.length === body.abi.parameters.length) texts = nameBodyParameters(texts, names)
+    }
+    texts = nameBodyBindings(
+      texts.map(abbreviateTypeSpellings),
+      new Map([...bindingNames].map(([declaration, cell]) => [cell, input.declarationNames.get(declaration) ?? null]))
     )
-    return artifacts.map((artifact, index) =>
-      renamed[index] === artifact.text ? artifact : { ...artifact, text: renamed[index] as string }
-    )
+    return artifacts.map((artifact, index) => (texts[index] === artifact.text ? artifact : { ...artifact, text: texts[index] as string }))
   }
   for (const body of input.bodies) {
     // A body's statements are not a translation unit on their own: they need a
@@ -2926,6 +2942,7 @@ const renderTranslationUnitSession = (input: CppTranslationUnitInput): CppTransl
       const promiseView = asyncPromiseViewOf(body)
       const promiseViewEntry =
         promiseView === null ? null : asyncPromiseViewEntryOf(body, promiseView, captures, programSite, formalsNarrowedIn(body.sourceOwner))
+      const bindingNames = new Map<DeclarationId, string>()
       const sections = emitBody(
         promiseView ?? body,
         input.placements,
@@ -2958,7 +2975,8 @@ const renderTranslationUnitSession = (input: CppTranslationUnitInput): CppTransl
         definitionCells,
         constructionOnlyFields,
         keyOrderUnobserved,
-        taskBodies
+        taskBodies,
+        input.shortNames === true ? bindingNames : undefined
       )
       const stableEntry = stableBorrowEntries.get(cppBodyName(body.sourceOwner))
       const versioned = integerVersions.get(String(body.sourceOwner))
@@ -3047,7 +3065,7 @@ const renderTranslationUnitSession = (input: CppTranslationUnitInput): CppTransl
       )
       renderedBodies.push({
         body,
-        artifacts: namedParameters(body, [
+        artifacts: namedParameters(body, bindingNames, [
           plain(`${opening} {`),
           ...integerDispatch.map(plain),
           ...commonJsScope.map(plain),

@@ -24,6 +24,8 @@ const templates: ReadonlyArray<readonly [string, string]> = [
   ['gea::Map', 'gMap'],
   ['gea::Set', 'gSet'],
   ['gea::Dictionary', 'gDictionary'],
+  ['gea::TypedArray', 'gTypedArray'],
+  ['gea::CallableObject', 'gCallable'],
   ['gea::Iterator', 'gIterator'],
   ['std::vector', 'gVector']
 ]
