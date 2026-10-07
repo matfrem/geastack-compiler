@@ -706,7 +706,197 @@ export const simplifyConditions = (text: string): string => {
 /** Every text-level respelling of a unit, in the order that lets each one see what the one before it made. */
 export const makeReadable = (text: string): string =>
   nameValues(
-    mergeDeclarations(
-      indentBlocks(simplifyConditions(unwrapRedundantParentheses(dropDefaultedAttributes(foldThrowHelpers(foldDoubleCasts(text))))))
+    reconstructLoops(
+      mergeDeclarations(
+        indentBlocks(simplifyConditions(unwrapRedundantParentheses(dropDefaultedAttributes(foldThrowHelpers(foldDoubleCasts(text))))))
+      )
     )
   )
+
+const isLabelStatement = (trimmed: string): boolean => labelDefinedBy(trimmed) !== null
+
+/** `i = i + 1` as `++i`, `i = i - 1` as `--i`, `i = i + k` as `i += k`; null for any other statement. */
+const stepOf = (trimmed: string): { readonly variable: string; readonly text: string } | null => {
+  if (!trimmed.endsWith(';')) return null
+  const equals = trimmed.indexOf(' = ')
+  if (equals <= 0) return null
+  const variable = trimmed.slice(0, equals)
+  if (![...variable].every(isIdentifierCharacter)) return null
+  const right = trimmed.slice(equals + 3, -1)
+  const operator = right.startsWith(`${variable} + `) ? '+' : right.startsWith(`${variable} - `) ? '-' : null
+  if (operator === null) return null
+  const amount = right.slice(variable.length + 3)
+  if (amount === '' || ![...amount].every(isIdentifierCharacter)) return null
+  if (amount === variable) return null
+  if (amount === '1') return { variable, text: operator === '+' ? `++${variable}` : `--${variable}` }
+  return { variable, text: `${variable} ${operator}= ${amount}` }
+}
+
+/** `if (!(i < n)) break;` as the condition that keeps the loop going, `i < n`; null for any other statement. */
+const continuationOf = (trimmed: string): string | null => {
+  const tail = ') break;'
+  if (!trimmed.startsWith('if (') || !trimmed.endsWith(tail)) return null
+  const test = trimmed.slice(4, trimmed.length - tail.length)
+  if (test === '') return null
+  if (test[0] === '!') {
+    const rest = test.slice(1)
+    if (rest[0] === '(' && matchingParenthesis(rest, 0) === rest.length - 1) return rest.slice(1, -1)
+    if ([...rest].every((character) => isIdentifierCharacter(character) || character === '.')) return rest
+  }
+  return `!(${test})`
+}
+
+const startsInnerLoop = (trimmed: string): boolean =>
+  (trimmed.startsWith('for (') || trimmed.startsWith('while (') || trimmed.startsWith('do ') || trimmed.startsWith('switch (')) &&
+  trimmed.endsWith('{')
+
+/**
+ * Writes the `for (;;)` loops of a unit as the loops they were: `for (init; test; step)` where the body is the
+ * test, the work, and one step ending in `continue`, and `while (test)` where a loop starts with its test and has no
+ * step to hand.
+ *
+ * A `continue` anywhere else in the body (outside a loop the body itself holds) would run a step it used to skip, so
+ * such a loop only becomes a `while`, whose `continue` goes back to the test. The step is also left alone when
+ * anything jumps to it. The initialiser moves into the `for` only when the variable is not named after the loop.
+ */
+export const reconstructLoops = (text: string): string => {
+  const lines = text.split('\n')
+  const out: string[] = []
+  let start = -1
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] as string
+    if (start < 0) {
+      if (line !== '' && line[0] !== ' ' && line[0] !== '}' && line[0] !== '#' && line.endsWith(' {')) start = index
+      else out.push(line)
+      continue
+    }
+    if (line !== '}') continue
+    out.push(...reconstructLoopsInFunction(lines.slice(start, index + 1)))
+    start = -1
+  }
+  // A function left open at the end of the text is written as it was.
+  if (start >= 0) out.push(...lines.slice(start))
+  return out.join('\n')
+}
+
+const reconstructLoopsInFunction = (original: readonly string[]): string[] => {
+  let lines = [...original]
+  if (!lines.some((line) => line.trim() === 'for (;;) {')) return lines
+  let shapes = shapesOfLines(lines)
+  if (shapes === null) return lines
+  const closeOf = (open: number): number => {
+    const depth = (shapes as LineShape[])[open]!.after
+    for (let at = open + 1; at < lines.length; at += 1) {
+      const shape = (shapes as LineShape[])[at] as LineShape
+      if (!shape.skipped && shape.level < depth) return at
+    }
+    return -1
+  }
+  for (let k = lines.length - 1; k >= 0; k -= 1) {
+    if (lines[k]!.trim() !== 'for (;;) {') continue
+    const end = closeOf(k)
+    const test = continuationOf((lines[k + 1] ?? '').trim())
+    if (end < 0 || test === null) continue
+    const indent = lines[k]!.slice(0, lines[k]!.length - lines[k]!.trimStart().length)
+    // The last statement of the body, past the braces that close the blocks it is nested in.
+    let last = end - 1
+    while (last > k && lines[last]!.trim() === '}') last -= 1
+    let step: { readonly variable: string; readonly text: string } | null = null
+    if (last - 1 > k + 1 && lines[last]!.trim() === 'continue;' && !isLabelStatement((lines[last - 2] ?? '').trim()))
+      step = stepOf(lines[last - 1]!.trim())
+    // Another `continue` at this loop's level would, with a step, skip it no longer.
+    const strays = (): boolean => {
+      for (let at = k + 2; at < end; at += 1) {
+        const trimmed = lines[at]!.trim()
+        if (startsInnerLoop(trimmed)) {
+          const inner = (shapes as LineShape[])[at]!.after
+          let close = at + 1
+          while (close < end && ((shapes as LineShape[])[close]!.skipped || (shapes as LineShape[])[close]!.level >= inner)) close += 1
+          at = close
+          continue
+        }
+        if (trimmed.includes('continue;') && !(step !== null && at === last)) return true
+      }
+      return false
+    }
+    const testTokens = new Set<string>()
+    eachIdentifier(test, (token, at) => (isMemberOrQualified(test, at) ? undefined : testTokens.add(token)))
+    const counted = step !== null && testTokens.has(step.variable) && !strays()
+    const header = counted
+      ? loopHeader(lines, k, end, test, step as { readonly variable: string; readonly text: string })
+      : { init: '', removeInit: -1 }
+    const keyword = counted ? `for (${header.init}; ${test}; ${(step as { text: string }).text})` : `while (${test})`
+    const removed = new Set<number>([k + 1])
+    if (counted) {
+      removed.add(last)
+      removed.add(last - 1)
+    }
+    if (header.removeInit >= 0) removed.add(header.removeInit)
+    // The body is one block (`{ ... }`) the test and the step sit around: it is the loop body itself.
+    const first = k + 2
+    let flattened = false
+    if (lines[first]?.trim() === '{') {
+      const depth = (shapes as LineShape[])[first]!.after
+      let close = first + 1
+      while (close < end && ((shapes as LineShape[])[close]!.skipped || (shapes as LineShape[])[close]!.level >= depth)) close += 1
+      if (close === end - 1 && lines[close]!.trim() === '}') {
+        removed.add(first)
+        removed.add(close)
+        flattened = true
+      }
+    }
+    const rewritten: string[] = []
+    lines.forEach((line, at) => {
+      if (removed.has(at)) return
+      if (at === k) rewritten.push(`${indent}${keyword} {`)
+      else if (flattened && at > first && at < end - 1) rewritten.push(line.startsWith('  ') ? line.slice(2) : line)
+      else rewritten.push(line)
+    })
+    lines = rewritten
+    shapes = shapesOfLines(lines)
+    if (shapes === null) return [...original]
+  }
+  return lines
+}
+
+/**
+ * The declaration `T v = init;` a counted loop starts from, to move into the `for`, when the lines between it and
+ * the loop are only declarations that neither name `v` nor `init`, and `v` is not named after the loop.
+ */
+const loopHeader = (
+  lines: readonly string[],
+  loop: number,
+  end: number,
+  test: string,
+  step: { readonly variable: string }
+): { readonly init: string; readonly removeInit: number } => {
+  const none = { init: '', removeInit: -1 }
+  const variable = step.variable
+  const mentions = (text: string, name: string): boolean => {
+    let found = false
+    eachIdentifier(text, (token, at) => {
+      if (token === name && !isMemberOrQualified(text, at)) found = true
+    })
+    return found
+  }
+  for (let at = loop - 1; at >= 0 && at >= loop - 8; at -= 1) {
+    const trimmed = lines[at]!.trim()
+    if (!mentions(trimmed, variable)) {
+      if (!trimmed.endsWith(';') || isLabelStatement(trimmed) || trimmed.includes('goto ') || trimmed.includes('{')) return none
+      continue
+    }
+    const marker = ` ${variable} = `
+    const split = trimmed.indexOf(marker)
+    if (split <= 0 || !trimmed.endsWith(';') || trimmed.includes('goto ')) return none
+    const type = trimmed.slice(0, split)
+    const init = trimmed.slice(split + marker.length, -1)
+    if (!mergeableTypes.some((candidate) => `${type} `.startsWith(candidate)) || type.includes('(')) return none
+    const initIsAtom = init !== '' && [...init].every((character) => isIdentifierCharacter(character) || character === '.')
+    if (!initIsAtom) return none
+    for (let between = at + 1; between < loop; between += 1) if (mentions(lines[between]!, init)) return none
+    for (let after = end + 1; after < lines.length; after += 1) if (mentions(lines[after]!, variable)) return none
+    if (mentions(init, variable) || !mentions(test, variable)) return none
+    return { init: `${type} ${variable} = ${init}`, removeInit: at }
+  }
+  return none
+}
