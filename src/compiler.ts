@@ -1388,6 +1388,11 @@ export const compile = (request: CompilationRequest): CompilationResult => {
           unitBaseName: request.unitBaseName ?? 'unit',
           sourceFileNames: frontend.sourceFileNames,
           declarationNames: frontend.declarationNames,
+          hoistedBindings: new Set(
+            [...frontend.graph.operations.values()].flatMap((operation) =>
+              operation.family === 'binding' && operation.functionScoped === true ? [operation.declaration] : []
+            )
+          ),
           parameterNames: frontend.parameterNames,
           shapeNames: frontend.shapeNames,
           wellKnownSymbols: frontend.wellKnownSymbols,

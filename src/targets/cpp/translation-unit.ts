@@ -420,6 +420,11 @@ export interface CppTranslationUnitInput {
   readonly sourceFileNames: ReadonlyMap<string, string>
   /** Source names of declarations (`FrontendResult.declarationNames`), spelled into emitted class and record names for a reader's benefit. */
   readonly declarationNames: ReadonlyMap<DeclarationId, string>
+  /**
+   * The mutable bindings that are not `let`/`const` -- `var` and the like -- which JavaScript hoists to the
+   * function: one cell for the whole call, whichever loop writes it. A body declares each at the top.
+   */
+  readonly hoistedBindings: ReadonlySet<DeclarationId>
   /** Parameter names by callable (`FrontendResult.parameterNames`), spelled over `gea_arg_N` where nothing in the body already uses the name. */
   readonly parameterNames: ReadonlyMap<DeclarationId, readonly (string | null)[]>
   /** Variable names of anonymous object shapes (`FrontendResult.shapeNames`), the fallback name of a record no declaration names. */
@@ -2976,7 +2981,8 @@ const renderTranslationUnitSession = (input: CppTranslationUnitInput): CppTransl
         constructionOnlyFields,
         keyOrderUnobserved,
         taskBodies,
-        input.shortNames === true ? bindingNames : undefined
+        input.shortNames === true ? bindingNames : undefined,
+        input.hoistedBindings
       )
       const stableEntry = stableBorrowEntries.get(cppBodyName(body.sourceOwner))
       const versioned = integerVersions.get(String(body.sourceOwner))

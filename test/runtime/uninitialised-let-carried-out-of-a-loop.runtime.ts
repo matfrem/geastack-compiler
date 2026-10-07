@@ -4,6 +4,7 @@
 //! expect: do-while e0-e2-e4
 //! expect: carried 9 undefined
 //! expect: nested 5_4/5
+//! expect: var u332
 // `let best: T | undefined;` has no initializer, so nothing wrote the cell where the statement is. A cell is
 // placed at the deepest scope that holds every operation naming it, and for a cell written only inside a loop
 // and read after it that scope was the loop's own, which a back edge leaves and re-enters: a new, empty cell
@@ -86,6 +87,17 @@ function nested(rows: number[][]): string {
   return out + '/' + String(longest)
 }
 
+// `var` is hoisted to the function, and `var kept;` does not reset it: one cell for the whole call.
+function viaVar(values: number[]): string {
+  let out = ''
+  for (const value of values) {
+    var kept: number | undefined
+    if (value > 1) kept = value
+    out += kept === undefined ? 'u' : String(kept)
+  }
+  return out
+}
+
 const items: Item[] = [
   { id: 1, x: 10 },
   { id: 2, x: 3 },
@@ -97,3 +109,4 @@ console.log('per-iteration', perIteration([true, false, true, false]))
 console.log('do-while', doWhile(5))
 console.log('carried', carried([3, 9, 4]), carried([]))
 console.log('nested', nested([[1, 5], [], [4, 2]]))
+console.log('var', viaVar([1, 3, 1, 2]))

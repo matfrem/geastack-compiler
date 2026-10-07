@@ -25,7 +25,7 @@ import { blocked, mintOperationId, mintResult, operand } from './mint.js'
 import type { ProducerContext } from '../producer-context.js'
 import type { IdentityTable } from '../identities.js'
 import type { StructuralTypeTable } from '../../model/structural-type-table.js'
-import { bindingKindOf, bindingKindOfElement, isBlockScopedDeclaration } from './binding-kind.js'
+import { bindingKindOf, bindingKindOfElement, isBlockScopedDeclaration, isVarDeclaration } from './binding-kind.js'
 import { boundElementType, citeBoundElementValue } from './destructuring.js'
 import { assertsType } from './erasure.js'
 import { citeExpressionResult } from './references.js'
@@ -62,6 +62,7 @@ const contributeBindingElement = (candidate: CensusCandidate, node: ts.BindingEl
     mutable,
     temporalDeadZone,
     ...(isBlockScopedDeclaration(node) ? { blockScoped: true as const } : {}),
+    ...(isVarDeclaration(node) ? { functionScoped: true as const } : {}),
     ...(context.commonJsBindings.has(declaration)
       ? {
           commonJs: {
@@ -738,6 +739,7 @@ const contributeVariableDeclaration = (
     mutable,
     temporalDeadZone,
     ...(isBlockScopedDeclaration(node) ? { blockScoped: true as const } : {}),
+    ...(isVarDeclaration(node) ? { functionScoped: true as const } : {}),
     ...(context.commonJsBindings.has(declaration)
       ? {
           commonJs: {

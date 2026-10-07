@@ -2335,7 +2335,8 @@ const nestedBlocksOf = (
   declarations: readonly { readonly name: string; readonly type: string }[],
   rootText: string,
   facts: CppFacts,
-  internalLabels: ReadonlyMap<IrBlockId, ReadonlySet<string>> = new Map()
+  internalLabels: ReadonlyMap<IrBlockId, ReadonlySet<string>> = new Map(),
+  pinned: ReadonlySet<string> = new Set()
 ): { readonly top: readonly { readonly name: string; readonly type: string }[]; readonly artifacts: readonly CppArtifact[] } => {
   const flat = (): { readonly top: typeof declarations; readonly artifacts: readonly CppArtifact[] } => ({
     top: declarations,
@@ -2356,7 +2357,7 @@ const nestedBlocksOf = (
     if (gotoTargetsOf(block.artifact.text).some((target) => !allowed.has(target))) return flat()
     mentions.set(id, identifiersOf(block.artifact.text))
   }
-  const scopes = declarationScopesOf(plan, declarations, mentions, rootText)
+  const scopes = declarationScopesOf(plan, declarations, mentions, rootText, pinned)
   const top: (typeof declarations)[number][] = []
   const scoped = new Map<IrBlockId, (typeof declarations)[number][]>()
   for (const entry of declarations) {
@@ -2428,7 +2429,8 @@ const regionScopedBlocksOf = (
   labels: ReadonlyMap<IrBlockId, string>,
   declarations: readonly { readonly name: string; readonly type: string }[],
   rootText: string,
-  facts: CppFacts
+  facts: CppFacts,
+  pinned: ReadonlySet<string> = new Set()
 ): { readonly top: readonly { readonly name: string; readonly type: string }[]; readonly artifacts: readonly CppArtifact[] } | null => {
   if (chunkIds.length !== chunks.length) return null
   const allLabels = new Set(labels.values())
@@ -2477,7 +2479,7 @@ const regionScopedBlocksOf = (
   if (plan === null) return null
   const rendered = new Map<IrBlockId, { readonly label: string | null; readonly artifact: CppArtifact }>()
   for (const [id, artifact] of texts) rendered.set(id, { label: targeted.has(id) ? requireBlockLabel(labels, id) : null, artifact })
-  return nestedBlocksOf(plan, rendered, labels, successors, declarations, rootText, facts, internal)
+  return nestedBlocksOf(plan, rendered, labels, successors, declarations, rootText, facts, internal, pinned)
 }
 
 /** One `blockN` label per block, in `blockOrder`, so a forward jump (a loop back-edge included) always resolves before any block renders. */
@@ -2567,7 +2569,9 @@ export const emitBody = (
   keyOrderUnobserved: ReadonlySet<string> = new Set(),
   taskBodies: ReadonlySet<string> = new Set(),
   // Filled with the name each binding cell took (`b3`), for a caller that wants to say what it was in the source.
-  bindingNamesOut: Map<DeclarationId, string> | undefined = undefined
+  bindingNamesOut: Map<DeclarationId, string> | undefined = undefined,
+  // `var` cells (`CppTranslationUnitInput.hoistedBindings`): declared once for the whole call, never per turn of a loop.
+  hoistedBindings: ReadonlySet<DeclarationId> = new Set()
 ): readonly CppArtifact[] => {
   // Every fact this body settles before a single line renders, computed here
   // -- from `body` and the plain, already-available inputs above -- and
@@ -3260,6 +3264,8 @@ export const emitBody = (
   // scope of a variable whose declaration initializes it.
   const declarationFacts: CppFacts = { kind: 'materialized', representation: { kind: 'void' }, owner, lineage: null }
   let topDeclarations: readonly { readonly name: string; readonly type: string }[] = ctx.declarations
+  const pinned = new Set<string>()
+  for (const [declaration, name] of ctx.bindingNames) if (hoistedBindings.has(declaration)) pinned.add(name)
   if (plan !== null && flow.successors !== null) {
     const nested = nestedBlocksOf(
       plan,
@@ -3268,12 +3274,23 @@ export const emitBody = (
       flow.successors,
       ctx.declarations,
       entryPrologue.join('\n'),
-      declarationFacts
+      declarationFacts,
+      undefined,
+      pinned
     )
     topDeclarations = nested.top
     blocks.push(...nested.artifacts)
   } else if (!isSingleBlock && flow.successors === null) {
-    const nested = regionScopedBlocksOf(body.entry, chunkIds, blocks, labels, ctx.declarations, entryPrologue.join('\n'), declarationFacts)
+    const nested = regionScopedBlocksOf(
+      body.entry,
+      chunkIds,
+      blocks,
+      labels,
+      ctx.declarations,
+      entryPrologue.join('\n'),
+      declarationFacts,
+      pinned
+    )
     if (nested !== null) {
       topDeclarations = nested.top
       blocks.splice(0, blocks.length, ...nested.artifacts)

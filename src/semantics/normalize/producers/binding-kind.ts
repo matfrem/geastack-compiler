@@ -49,6 +49,17 @@ export const bindingKindOfElement = (element: ts.BindingElement): BindingKind =>
   return ts.isVariableDeclaration(owner) ? bindingKindOf(owner) : { mutable: true, temporalDeadZone: false }
 }
 
+/** Whether a declaration is a `var` (or a binding element of one): hoisted to its function, one binding for the whole call. */
+export const isVarDeclaration = (declaration: ts.VariableDeclaration | ts.BindingElement): boolean => {
+  let owner: ts.Node = declaration
+  while (ts.isBindingElement(owner) || ts.isObjectBindingPattern(owner) || ts.isArrayBindingPattern(owner)) owner = owner.parent
+  return (
+    ts.isVariableDeclaration(owner) &&
+    ts.isVariableDeclarationList(owner.parent) &&
+    (owner.parent.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const | ts.NodeFlags.Using)) === 0
+  )
+}
+
 /**
  * Whether a `let`/`const` declaration's scope is a block nested inside its
  * execution context rather than that context's own top level.

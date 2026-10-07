@@ -211,6 +211,12 @@ export interface BindingOperation extends SemanticOperationBase {
    */
   readonly blockScoped?: true
   /**
+   * A `var`: hoisted to its function, so one binding for the whole call whichever loop or block
+   * writes it, and `var x;` does not reset it. A target that places locals by where they are named
+   * must declare it for the whole call.
+   */
+  readonly functionScoped?: true
+  /**
    * Set only on the 'declare' introduction of an ambient value declaration: a
    * cell this program names but never writes, because a host supplies the
    * value from outside it. `linkageName` is the ABI contract with that host,

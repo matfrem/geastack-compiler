@@ -171,7 +171,9 @@ export const declarationScopesOf = (
   plan: ScopePlan,
   declarations: readonly ScopedDeclaration[],
   mentions: ReadonlyMap<IrBlockId, ReadonlySet<string>>,
-  rootText: string
+  rootText: string,
+  /** Locals that must live for the whole call whatever names them: a hoisted `var`, which no loop may re-create. */
+  pinned: ReadonlySet<string> = new Set()
 ): ReadonlyMap<string, IrBlockId | null> => {
   const names = new Set(declarations.map((entry) => entry.name))
   const blocksNaming = new Map<string, IrBlockId[]>()
@@ -199,7 +201,7 @@ export const declarationScopesOf = (
   const scopes = new Map<string, IrBlockId | null>()
   for (const { name } of declarations) {
     const blocks = blocksNaming.get(name) ?? []
-    if (atRoot.has(name) || blocks.length === 0) {
+    if (atRoot.has(name) || blocks.length === 0 || pinned.has(name)) {
       scopes.set(name, null)
       continue
     }
