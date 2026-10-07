@@ -43,18 +43,7 @@ import { reactiveBoundRecordFields, reactiveDependenciesOfBodies } from './react
 import { buildDirectCallableIndex, buildCaptureIndex } from './captures.js'
 import { createIdentifierRenamer } from './identifier-names.js'
 import { abbreviateTypeSpellings, withTypeAliases } from './type-aliases.js'
-import {
-  dropDefaultedAttributes,
-  foldDoubleCasts,
-  foldThrowHelpers,
-  displayPathsOf,
-  indentBlocks,
-  mergeDeclarations,
-  nameBodyBindings,
-  nameBodyParameters,
-  nameValues,
-  unwrapRedundantParentheses
-} from './readable-text.js'
+import { displayPathsOf, makeReadable, nameBodyBindings, nameBodyParameters } from './readable-text.js'
 import { createCppDocumentBuilder, emptyCppFacts, render, spliceRendered, type CppArtifact, type RenderedCppSource } from './document.js'
 import { beginUnionAliasing, endUnionAliasing, cppNativeHandleTag } from './types.js'
 import {
@@ -1873,13 +1862,7 @@ export const renderTranslationUnit = (input: CppTranslationUnitInput): CppTransl
     const { renameAll } = createIdentifierRenamer(input.structuralTypes, input.declarationNames, input.shapeNames)
     // `source` is `units[0].source` under `single`, so renaming the units
     // renames it too, in the one pass that keeps the decision whole.
-    const renamed = renameAll(result.units.map((unit) => unit.source)).map((text) =>
-      withTypeAliases(
-        nameValues(
-          mergeDeclarations(indentBlocks(unwrapRedundantParentheses(dropDefaultedAttributes(foldThrowHelpers(foldDoubleCasts(text))))))
-        )
-      )
-    )
+    const renamed = renameAll(result.units.map((unit) => unit.source)).map((text) => withTypeAliases(makeReadable(text)))
     const units = result.units.map((unit, index) => ({ ...unit, source: renamed[index] as RenderedCppSource }))
     return { ...result, source: result.source === null ? null : (units[0]?.source ?? null), units }
   } catch (error) {
@@ -2995,7 +2978,8 @@ const renderTranslationUnitSession = (input: CppTranslationUnitInput): CppTransl
         keyOrderUnobserved,
         taskBodies,
         input.shortNames === true ? bindingNames : undefined,
-        input.hoistedBindings
+        input.hoistedBindings,
+        input.shortNames === true
       )
       const stableEntry = stableBorrowEntries.get(cppBodyName(body.sourceOwner))
       const versioned = integerVersions.get(String(body.sourceOwner))

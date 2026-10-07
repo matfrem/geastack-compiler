@@ -86,6 +86,7 @@ import { directCallReceiversOf, virtualCalleesOf } from './direct-call-receivers
 import { unionMemberTypeofReadsOf, unionMethodReadsOf } from './emit-union-properties.js'
 import { reactiveOriginsOf } from './reactive-origins.js'
 import { renderTryRegion, type RegionRendering } from './emit-exceptions.js'
+import { innermostLoopOf, structuredJumpsIn, structuredLoopsOf, type LoopShape } from './emit-loops.js'
 import { declarationScopesOf, gotoTargetsOf, identifiersOf, scopePlanOf, type ScopePlan } from './emit-scopes.js'
 import { emitReturn } from './emit-return.js'
 import {
@@ -2336,7 +2337,8 @@ const nestedBlocksOf = (
   rootText: string,
   facts: CppFacts,
   internalLabels: ReadonlyMap<IrBlockId, ReadonlySet<string>> = new Map(),
-  pinned: ReadonlySet<string> = new Set()
+  pinned: ReadonlySet<string> = new Set(),
+  structuredLoops = false
 ): { readonly top: readonly { readonly name: string; readonly type: string }[]; readonly artifacts: readonly CppArtifact[] } => {
   const flat = (): { readonly top: typeof declarations; readonly artifacts: readonly CppArtifact[] } => ({
     top: declarations,
@@ -2355,9 +2357,51 @@ const nestedBlocksOf = (
       ...(internalLabels.get(id) ?? [])
     ])
     if (gotoTargetsOf(block.artifact.text).some((target) => !allowed.has(target))) return flat()
-    mentions.set(id, identifiersOf(block.artifact.text))
   }
-  const scopes = declarationScopesOf(plan, declarations, mentions, rootText, pinned)
+  // Loops written as `for (;;)`: their exits leave the header's scope, and the jumps along their edges become
+  // `continue` and `break`. All of it before the declarations are placed, since it changes where a local is named.
+  const structure = structuredLoops
+    ? structuredLoopsOf(plan, successors, (header, exit) => labels.has(header) && (exit === null || labels.has(exit)))
+    : { plan, loops: new Map<IrBlockId, LoopShape>() }
+  const effective = structure.plan
+  const loops = structure.loops
+  const texts = new Map<IrBlockId, string>()
+  for (const id of plan.order) {
+    let original = (rendered.get(id) as { readonly artifact: CppArtifact }).artifact.text
+    const loop = innermostLoopOf(loops, id)
+    // A block that leaves its loop by falling into the block written next spells no jump (the layout elides it), but
+    // the end of a `for (;;)` body is the top of the loop. The edge is written out, and `break` takes it from there.
+    if (loop !== null) {
+      const jumps = new Set(gotoTargetsOf(original))
+      for (const next of successors.get(id) ?? []) {
+        const target = labels.get(next)
+        if (!loop.members.has(next) && target !== undefined && !jumps.has(target))
+          original += `
+goto ${target};`
+      }
+    }
+    texts.set(
+      id,
+      loop === null
+        ? original
+        : structuredJumpsIn(
+            original,
+            requireBlockLabel(labels, loop.header),
+            loop.exit === null ? null : requireBlockLabel(labels, loop.exit)
+          )
+    )
+    mentions.set(id, identifiersOf(texts.get(id) as string))
+  }
+  // A label nothing jumps to any more (the exit a `break` replaced) is not written.
+  const referenced = new Set<string>(gotoTargetsOf(rootText))
+  if (loops.size > 0) for (const text of texts.values()) for (const target of gotoTargetsOf(text)) referenced.add(target)
+  // A block the layout left unlabelled because it was only ever fallen into gets its label once a jump names it.
+  const labelOf = (id: IrBlockId, written: string | null): string | null => {
+    if (loops.size === 0) return written
+    const named = written ?? labels.get(id) ?? null
+    return named !== null && referenced.has(named) ? named : null
+  }
+  const scopes = declarationScopesOf(effective, declarations, mentions, rootText, pinned)
   const top: (typeof declarations)[number][] = []
   const scoped = new Map<IrBlockId, (typeof declarations)[number][]>()
   for (const entry of declarations) {
@@ -2375,17 +2419,21 @@ const nestedBlocksOf = (
     const block = rendered.get(id)
     if (!block) return
     const own = scoped.get(id) ?? []
+    const loop = loops.get(id)
+    const text = texts.get(id) as string
     const head: string[] = []
     // A label must label a statement: one whose block writes nothing of its
     // own and opens no scope labels the empty statement.
-    if (block.label !== null) head.push(own.length === 0 && block.artifact.text.trim() === '' ? `${block.label}: ;` : `${block.label}:`)
-    if (own.length > 0) head.push('{', ...own.map((entry) => `${entry.type} ${entry.name};`))
+    const label = labelOf(id, block.label)
+    if (label !== null) head.push(own.length === 0 && loop === undefined && text.trim() === '' ? `${label}: ;` : `${label}:`)
+    if (loop !== undefined) head.push('for (;;) {', ...own.map((entry) => `${entry.type} ${entry.name};`))
+    else if (own.length > 0) head.push('{', ...own.map((entry) => `${entry.type} ${entry.name};`))
     if (head.length > 0) artifacts.push({ text: head.join('\n'), facts })
-    artifacts.push(block.artifact)
-    for (const child of plan.children.get(id) ?? []) write(child)
-    if (own.length > 0) artifacts.push({ text: '}', facts })
+    artifacts.push(text === block.artifact.text ? block.artifact : { text, facts: block.artifact.facts })
+    for (const child of effective.children.get(id) ?? []) write(child)
+    if (loop !== undefined || own.length > 0) artifacts.push({ text: '}', facts })
   }
-  write(plan.entry)
+  write(effective.entry)
   return { top, artifacts }
 }
 
@@ -2571,7 +2619,9 @@ export const emitBody = (
   // Filled with the name each binding cell took (`b3`), for a caller that wants to say what it was in the source.
   bindingNamesOut: Map<DeclarationId, string> | undefined = undefined,
   // `var` cells (`CppTranslationUnitInput.hoistedBindings`): declared once for the whole call, never per turn of a loop.
-  hoistedBindings: ReadonlySet<DeclarationId> = new Set()
+  hoistedBindings: ReadonlySet<DeclarationId> = new Set(),
+  // Write the natural loops as `for (;;)` with `continue` and `break` (`emit-loops.ts`); off, every edge is a `goto`.
+  structuredLoops = false
 ): readonly CppArtifact[] => {
   // Every fact this body settles before a single line renders, computed here
   // -- from `body` and the plain, already-available inputs above -- and
@@ -3276,7 +3326,8 @@ export const emitBody = (
       entryPrologue.join('\n'),
       declarationFacts,
       undefined,
-      pinned
+      pinned,
+      structuredLoops
     )
     topDeclarations = nested.top
     blocks.push(...nested.artifacts)

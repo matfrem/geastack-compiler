@@ -686,3 +686,27 @@ export const nameValues = (text: string): string => {
   }
   return renamedLines.size === 0 ? text : lines.map((line, index) => renamedLines.get(index) ?? line).join('\n')
 }
+
+/** `if (!(!done)) break;` as `if (done) break;`: a condition that negates a name twice says the name. */
+export const simplifyConditions = (text: string): string => {
+  const needle = 'if (!(!'
+  let result = ''
+  let from = 0
+  for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length)) {
+    if (isIdentifierCharacter(text[at - 1])) continue
+    let end = at + needle.length
+    while (end < text.length && isIdentifierCharacter(text[end])) end += 1
+    if (end === at + needle.length || text.slice(end, end + 2) !== '))') continue
+    result += `${text.slice(from, at)}if (${text.slice(at + needle.length, end)})`
+    from = end + 2
+  }
+  return from === 0 ? text : result + text.slice(from)
+}
+
+/** Every text-level respelling of a unit, in the order that lets each one see what the one before it made. */
+export const makeReadable = (text: string): string =>
+  nameValues(
+    mergeDeclarations(
+      indentBlocks(simplifyConditions(unwrapRedundantParentheses(dropDefaultedAttributes(foldThrowHelpers(foldDoubleCasts(text))))))
+    )
+  )
