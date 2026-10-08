@@ -785,7 +785,7 @@ const windowsOfLoop = (blocks: ReadonlySet<IrBlockId>, body: IrBody, context: Wi
       // `cells`), but a constant reach is checked against its `size()` like any
       // other window.
       if (typed !== null && ((wrapped && modulus === null) || held.reference.kind === 'element')) continue
-      const base = wrapped ? null : indexBaseOf(operation.key, context, blocks)
+      const base = wrapped ? null : indexBaseOf(operation.key, context, blocks, block.operations, at)
       const found = byReference.get(key)
       if (base === undefined) {
         if (found) found.sound = false
@@ -987,7 +987,13 @@ const remainderBehind = (
  * The loop-invariant addend an index carries, `null` for the bare counter, and
  * `undefined` for an index this cannot bound.
  */
-const indexBaseOf = (key: IrOperand, context: WindowContext, blocks: ReadonlySet<IrBlockId>): DenseOffset | undefined => {
+const indexBaseOf = (
+  key: IrOperand,
+  context: WindowContext,
+  blocks: ReadonlySet<IrBlockId>,
+  operations: readonly IrNonTerminatorOperation[],
+  at: number
+): DenseOffset | undefined => {
   if (context.readsCell.get(key.value) === context.counter) return null
   const parallel = parallelCounterBaseOf(key, context, blocks)
   if (parallel !== undefined) return { terms: [{ operand: parallel, negated: false }] }
@@ -1001,6 +1007,8 @@ const indexBaseOf = (key: IrOperand, context: WindowContext, blocks: ReadonlySet
       terms.push({ operand: invariant, negated })
       return 0
     }
+    const settled = settledValueOf(operand, context, blocks, operations, at)
+    if (settled !== undefined) return depth > 4 ? undefined : walk(settled, negated, depth + 1)
     const compute = context.operationOf.get(operand.value)
     if (depth > 4 || compute?.kind !== 'compute' || compute.form !== 'binary') return undefined
     if (compute.operator !== '+' && compute.operator !== '-') return undefined
@@ -1012,6 +1020,29 @@ const indexBaseOf = (key: IrOperand, context: WindowContext, blocks: ReadonlySet
     return more === undefined ? undefined : counted + more
   }
   return walk(key, false, 0) === 1 ? { terms } : undefined
+}
+
+/**
+ * What a `const k = y * size + x` read stands for: the value written to `k` in this block before the access.
+ *
+ * `k` is a cell the loop writes exactly once and nothing else ever writes, so the read sees that one value -- the
+ * write sits earlier in the same block, which also rules out a read of the previous turn's value. The index is then
+ * the expression behind the cell, and the stencil's `k - 1`, `k + size` are offsets of it like any other.
+ */
+const settledValueOf = (
+  operand: IrOperand,
+  context: WindowContext,
+  blocks: ReadonlySet<IrBlockId>,
+  operations: readonly IrNonTerminatorOperation[],
+  at: number
+): IrOperand | undefined => {
+  const cell = context.readsCell.get(operand.value)
+  if (cell === undefined || cell === context.counter) return undefined
+  const writes = context.cellWrites.get(cell) ?? []
+  const only = writes[0]
+  if (writes.length !== 1 || only === undefined || !blocks.has(only.block)) return undefined
+  const written = operations.findIndex((operation) => operation.kind === 'binding-write' && operation.declaration === cell)
+  return written >= 0 && written < at ? only.value : undefined
 }
 
 /** Two counters advanced together by one differ by their initial offset.
