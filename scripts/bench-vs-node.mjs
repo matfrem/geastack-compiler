@@ -7,6 +7,7 @@
  * process start-up is outside the figure and the checksum says the two runs computed the same thing. Node runs the
  * `.ts` file as it is (`--experimental-strip-types`); the programs use erasable syntax only.
  *
+ * `BENCH_DIR` names another directory of programs (default `test/bench`), for programs that are not ours to commit.
  * `BENCH_OPT` (default `-O2`) and `BENCH_SAMPLES` (default 5, the best of which is reported) tune the run, and
  * `BENCH_PROJECT` names the tsconfig the programs are compiled under (`test/bench/tsconfig.unchecked.json` adds
  * `noUncheckedIndexedAccess`, under which every `array[i]!` reads through an `Optional`). The native
@@ -24,7 +25,7 @@ import { buildNative } from './native-build-cache.mjs'
 import { executableSuffix } from '../test/executable-suffix.mjs'
 
 const root = resolve(import.meta.dirname, '..')
-const programsDirectory = join(root, 'test', 'bench')
+const programsDirectory = resolve(process.env.BENCH_DIR ?? join(root, 'test', 'bench'))
 const optimisation = process.env.BENCH_OPT ?? '-O2'
 const samples = Number(process.env.BENCH_SAMPLES ?? 5)
 const project = resolve(process.env.BENCH_PROJECT ?? join(programsDirectory, 'tsconfig.json'))
