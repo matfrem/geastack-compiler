@@ -10,10 +10,17 @@ import {
   displayPathsOf,
   dropDefaultedAttributes,
   dropOptionalWrappers,
+  foldBoolCasts,
+  foldCallableInitialisers,
   foldDefaultedParameters,
   foldDoubleCasts,
   foldEmptyOptionalArguments,
   foldFieldSetters,
+  foldIfStatements,
+  foldKeyComparisons,
+  foldReturnedValues,
+  foldShortCircuits,
+  foldSizeCasts,
   foldStringViews,
   foldRangeVariables,
   foldThrowHelpers,
@@ -33,12 +40,12 @@ import { abbreviateTypeSpellings, withTypeAliases } from '../dist/targets/cpp/ty
 
 const lines = (...text) => text.join('\n')
 
-test('static_cast<double> of a number is the double literal, of anything else gDouble()', () => {
-  assert.equal(foldDoubleCasts('x = static_cast<double>((0)) + static_cast<double>((b1));'), 'x = 0.0 + gDouble((b1));')
+test('static_cast<double> of a number is the double literal, of anything else gToDouble()', () => {
+  assert.equal(foldDoubleCasts('x = static_cast<double>((0)) + static_cast<double>((b1));'), 'x = 0.0 + gToDouble((b1));')
   assert.equal(foldDoubleCasts('static_cast<double>((-2))'), '(-2.0)')
   // octal: 010 is eight as an integer and ten as 010.0, so the cast of it is not rewritten as a literal
-  assert.equal(foldDoubleCasts('static_cast<double>((010))'), 'gDouble((010))')
-  assert.equal(foldDoubleCasts('static_cast<double>((f(static_cast<double>((1)))))'), 'gDouble((f(1.0)))')
+  assert.equal(foldDoubleCasts('static_cast<double>((010))'), 'gToDouble((010))')
+  assert.equal(foldDoubleCasts('static_cast<double>((f(static_cast<double>((1)))))'), 'gToDouble((f(1.0)))')
   assert.equal(foldDoubleCasts('my_static_cast<double>((1))'), 'my_static_cast<double>((1))')
 })
 
@@ -280,7 +287,7 @@ test('the whole pipeline on a counted loop', () => {
   )
   const readable = withTypeAliases(makeReadable(unit))
   assert.match(readable, /for \(long long i = 0; i < n; \+\+i\) \{/)
-  assert.match(readable, /gDouble\(i\)/)
+  assert.match(readable, /gToDouble\(i\)/)
   assert.doesNotMatch(readable, /\bgoto\b|\bcontinue\b/)
 })
 
@@ -329,7 +336,14 @@ test('a defaulted parameter is one conditional, and its diamond stays when a lab
     )
   assert.equal(
     foldDefaultedParameters(diamond('use(v0);')),
-    lines('double f(gOptional<double> progress) {', 'double progress_default;', 'progress_default = progress.has_value() ? (*progress) : 0;', 'use(progress_default);', 'return progress_default;', '}')
+    lines(
+      'double f(gOptional<double> progress) {',
+      'double progress_default;',
+      'progress_default = progress.has_value() ? (*progress) : 0;',
+      'use(progress_default);',
+      'return progress_default;',
+      '}'
+    )
   )
   assert.equal(foldDefaultedParameters(diamond('goto block3;')), diamond('goto block3;'))
 })
@@ -344,8 +358,17 @@ test('a block that is the rest of a function loses its braces, unless it redecla
 })
 
 test('a copy of a defaulted parameter reads the parameter instead', () => {
-  const unit = lines('void f(gOptional<double> p) {', '  double p_default = p.has_value() ? (*p) : 0;', '  double p_0 = p_default;', '  use(p_0);', '}')
-  assert.equal(inlineScalarCopies(unit), lines('void f(gOptional<double> p) {', '  double p_default = p.has_value() ? (*p) : 0;', '  use(p_default);', '}'))
+  const unit = lines(
+    'void f(gOptional<double> p) {',
+    '  double p_default = p.has_value() ? (*p) : 0;',
+    '  double p_0 = p_default;',
+    '  use(p_0);',
+    '}'
+  )
+  assert.equal(
+    inlineScalarCopies(unit),
+    lines('void f(gOptional<double> p) {', '  double p_default = p.has_value() ? (*p) : 0;', '  use(p_default);', '}')
+  )
 })
 
 test('a chain of scalar copies reads the first name', () => {
@@ -370,7 +393,10 @@ test('an optional field is assigned its value, and only when the same line marks
 })
 
 test('a string view of a literal with its true length is the sv literal', () => {
-  assert.equal(foldStringViews('f(std::string_view{"ball", 4}, std::string_view{"", 0}, std::string_view{"a\\n", 2});'), 'f("ball"sv, ""sv, "a\\n"sv);')
+  assert.equal(
+    foldStringViews('f(std::string_view{"ball", 4}, std::string_view{"", 0}, std::string_view{"a\\n", 2});'),
+    'f("ball"sv, ""sv, "a\\n"sv);'
+  )
   const wrong = 'std::string_view{"ball", 5}'
   assert.equal(foldStringViews(wrong), wrong)
   const unknown = 'std::string_view{"\\x41", 1}'
@@ -390,15 +416,122 @@ test('a store followed by its presence mark becomes one setter call, and the rec
   )
   const result = foldFieldSetters(unit)
   assert.match(result, /m->set_emissive\(16726784\);/)
-  assert.match(result, /template <typename V> void set_emissive\(V&& value\) \{ emissive = std::forward<V>\(value\); gea_present_emissive = true; \}/)
+  assert.match(
+    result,
+    /template <typename V> void set_emissive\(V&& gea_value\) \{ emissive = std::forward<V>\(gea_value\); gea_present_emissive = true; \}/
+  )
   assert.match(result, /m->emissive = \(gOptional<double>\{1\}\); n->gea_present_emissive = true;/)
 })
 
 test('an empty optional passed to a compiled function is gEmpty; one that names its type elsewhere stays', () => {
-  assert.equal(
-    foldEmptyOptionalArguments('Gf_f(gOptional<gRef<gArray<double>>>(), 5, gOptional<double>());'),
-    'Gf_f(gEmpty, 5, gEmpty);'
-  )
+  assert.equal(foldEmptyOptionalArguments('Gf_f(gOptional<gRef<gArray<double>>>(), 5, gOptional<double>());'), 'Gf_f(gEmpty, 5, gEmpty);')
   const kept = 'auto x = gOptional<double>(); std::move(gOptional<double>()); Gf_f(gOptional<double>{1});'
   assert.equal(foldEmptyOptionalArguments(kept), kept)
+})
+
+test('a function object is minted by thunk alone, the signature staying with the destination', () => {
+  assert.equal(
+    foldCallableInitialisers(
+      'f = gCallable<bool(gCallable<double(double)>)>{gCallable<bool(gCallable<double(double)>)>::entryWithFacts<&Gf_a_thunk>("a"sv, 1, Gf_a_thunk_source()), nullptr};'
+    ),
+    'f = gCallableOf<&Gf_a_thunk>("a"sv, 1, Gf_a_thunk_source(), nullptr);'
+  )
+  const other = 'f = gCallable<void()>{gCallable<int()>::entryWithFacts<&t>(""sv, 0, s()), nullptr};'
+  assert.equal(foldCallableInitialisers(other), other)
+})
+
+test('boolean casts are gToBool', () => {
+  assert.equal(foldBoolCasts('x = static_cast<bool>(carried) && static_cast<bool>(f(a));'), 'x = gToBool(carried) && gToBool(f(a));')
+})
+
+test('a key tested against a literal is compared to a view of it', () => {
+  assert.equal(
+    foldKeyComparisons('if (gea_name == "kind") x; if (other == "a") y; if (gea_name != "a\\"b") z;'),
+    'if (gea_name == "kind"sv) x; if (other == "a") y; if (gea_name != "a\\"b"sv) z;'
+  )
+})
+
+test('size casts are gToSizeT', () => {
+  assert.equal(foldSizeCasts('n = static_cast<std::size_t>(i) + static_cast<std::size_t>(f(x));'), 'n = gToSizeT(i) + gToSizeT(f(x));')
+})
+
+test('a guard around a block is an if, a guard with a jump over an alternative is an if / else, a chain is else if', () => {
+  const simple = lines('void f() {', '  if (!(a > b)) goto block3;', '  {', '    x = 1;', '  }', 'block3:', '  use(x);', '}')
+  assert.equal(foldIfStatements(simple), lines('void f() {', '  if (a > b) {', '    x = 1;', '  }', '  use(x);', '}'))
+  const chain = lines(
+    'void f() {',
+    '  if (!(a)) goto block1;',
+    '  {',
+    '    x = 1;',
+    '  }',
+    '  goto block9;',
+    'block1:',
+    '  if (!(b)) goto block2;',
+    '  {',
+    '    x = 2;',
+    '  }',
+    '  goto block9;',
+    'block2:',
+    '  {',
+    '    x = 3;',
+    '  }',
+    'block9:',
+    '  use(x);',
+    '}'
+  )
+  assert.equal(
+    foldIfStatements(chain),
+    lines('void f() {', '  if (a) {', '    x = 1;', '  } else if (b) {', '    x = 2;', '  } else {', '    x = 3;', '  }', '  use(x);', '}')
+  )
+  const shared = lines('void f() {', '  if (!(a)) goto block3;', '  {', '    x = 1;', '  }', 'block3:', '  if (c) goto block3;', '}')
+  assert.equal(foldIfStatements(shared), shared)
+})
+
+test('a chain of && diamonds is one expression and its returned temporary goes away', () => {
+  const unit = lines(
+    'bool f(long long x, long long z) {',
+    '  bool v0;',
+    '  bool v4 = x >= 0;',
+    '  if (!v4) goto block2;',
+    '  v0 = z >= 0;',
+    '  goto block3;',
+    'block2:',
+    '  v0 = v4;',
+    'block3:',
+    '  bool v1;',
+    '  if (!v0) goto block5;',
+    '  v1 = x < lim;',
+    '  goto block6;',
+    'block5:',
+    '  v1 = v0;',
+    'block6:',
+    '  return v1;',
+    '}'
+  )
+  const folded = foldShortCircuits(unit)
+  assert.doesNotMatch(folded, /goto/)
+  assert.match(folded, /v1 = x >= 0 && z >= 0 && x < lim;/)
+  assert.equal(
+    foldReturnedValues(mergeDeclarations(folded)),
+    lines('bool f(long long x, long long z) {', '  return x >= 0 && z >= 0 && x < lim;', '}')
+  )
+  const orForm = unit.split('(!v4)').join('(v4)')
+  assert.match(foldShortCircuits(orForm), /v1 = \(x >= 0 \|\| z >= 0\) && x < lim;/)
+  const shared = unit.replace('  return v1;', '  if (c) goto block3;')
+  assert.match(foldShortCircuits(shared), /v0 = z >= 0;\n {2}goto block3;\nblock2:/)
+})
+
+test('doubled parentheses, member paths and negated paths lose the pair they do not need', () => {
+  assert.equal(unwrapRedundantParentheses('f((p->q), ((*p)), ((a + b)));'), 'f(p->q, *p, a + b);')
+  assert.equal(
+    unwrapRedundantParentheses('x = gea::integerBoundLess((gea_this->size->z));'),
+    'x = gea::integerBoundLess(gea_this->size->z);'
+  )
+  assert.equal(unwrapRedundantParentheses('f((-(Gg_P->maxFall)), g((-1)));'), 'f(-Gg_P->maxFall, g(-1));')
+  // what the parentheses still decide
+  assert.equal(
+    unwrapRedundantParentheses('y = (*p).x; z = a / (*p); decltype((x)) w; h((a, b));'),
+    'y = (*p).x; z = a / (*p); decltype((x)) w; h((a, b));'
+  )
+  assert.equal(unwrapRedundantParentheses('v = a - (-b); w = a-(-b);'), 'v = a - (-b); w = a-(-b);')
 })

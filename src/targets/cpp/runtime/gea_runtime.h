@@ -9348,6 +9348,32 @@ struct EmptyOptional {};
 inline constexpr EmptyOptional emptyOptional{};
 
 /**
+ * A function object about to be minted from a thunk, before the signature it is minted AS is known. The thunk's own
+ * type already fixes that signature, but the destination states it again (`gCallable<bool(double)> f; f =
+ * gCallable<bool(double)>{gCallable<bool(double)>::entryWithFacts<&thunk>(...), env}` names it three times). This
+ * converts to whichever `CallableObject` it is assigned or initialised into, so the signature is written once, where
+ * the variable is declared.
+ */
+template <auto Thunk, typename Environment>
+struct CallableInitializer {
+  std::string_view name;
+  std::size_t length;
+  std::string_view text;
+  Environment environment;
+
+  template <typename Signature>
+  operator CallableObject<Signature>() && {
+    return CallableObject<Signature>{CallableObject<Signature>::template entryWithFacts<Thunk>(name, length, text), std::move(environment)};
+  }
+};
+
+template <auto Thunk, typename Environment>
+CallableInitializer<Thunk, std::remove_cvref_t<Environment>> callableInitializer(
+    std::string_view name, std::size_t length, std::string_view text, Environment&& environment) {
+  return {name, length, text, std::forward<Environment>(environment)};
+}
+
+/**
  * `T | undefined`, never a `T` holding a sentinel: a presence flag plus a
  * default-constructible `T`.
  *

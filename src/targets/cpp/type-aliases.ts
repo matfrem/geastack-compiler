@@ -55,10 +55,13 @@ export const runtimeIncludeLine = '#include "gea_runtime.h"'
 export const typeAliasBlock = [
   'using namespace std::string_view_literals;',
   'inline constexpr gea::EmptyOptional gEmpty{};',
+  'template <auto Thunk, class Environment> inline auto gCallableOf(std::string_view name, std::size_t length, std::string_view text, Environment&& environment) { return gea::callableInitializer<Thunk>(name, length, text, std::forward<Environment>(environment)); }',
   ...templates.map(([from, to]) => `template <class... gArguments> using ${to} = ${from}<gArguments...>;`),
   ...types.map(([from, to]) => `using ${to} = ${from};`),
   `using ${compound.to} = ${compound.from};`,
-  'template <class T> constexpr double gDouble(const T& value) { return static_cast<double>(value); }',
+  'template <class T> constexpr double gToDouble(const T& value) { return static_cast<double>(value); }',
+  'template <class T> constexpr bool gToBool(T&& value) { return static_cast<bool>(std::forward<T>(value)); }',
+  'template <class T> constexpr std::size_t gToSizeT(T&& value) { return static_cast<std::size_t>(std::forward<T>(value)); }',
   'template <class Cursor> inline auto gItems(Cursor& cursor) { return gea::cursorRange(cursor); }',
   ...throwHelperDefinitions
 ].join('\n')

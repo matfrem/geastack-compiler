@@ -2788,7 +2788,14 @@ const renderTranslationUnitSession = (input: CppTranslationUnitInput): CppTransl
         }
         // A coercion of a callable operand -- `fn + ''`, a template, the arm
         // of a union holding one -- spells its source text (`emit-tostring.ts`).
-        if (operation.kind === 'compute' && operation.operands.some((operand) => holdsCallable(operand.representation))) {
+        // A comparison, `typeof`, `instanceof`, `in` or `!` takes the callable as a value and spells nothing.
+        const spellsSource =
+          operation.kind === 'compute' &&
+          (operation.form === 'binary' ||
+            operation.form === 'template' ||
+            operation.form === 'update' ||
+            (operation.form === 'unary' && operation.operator !== '!'))
+        if (spellsSource && operation.operands.some((operand) => holdsCallable(operand.representation))) {
           traceFunctionFacts(body, 'a computation over a callable operand')
           return true
         }

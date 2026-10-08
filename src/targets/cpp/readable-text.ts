@@ -54,12 +54,9 @@ const doubleLiteralOf = (text: string): string | null => {
   return negative ? `(-${literal})` : literal
 }
 
-/**
- * `static_cast<double>(x)` as `gDouble(x)`, and as the bare literal when `x` is a
- * number written out -- which is exactly what the cast of one means.
- */
-export const foldDoubleCasts = (text: string): string => {
-  const needle = 'static_cast<double>('
+/** `static_cast<type>(x)` as `helper(x)` everywhere the cast is not part of a longer name; `literal` may respell a constant argument. */
+const foldCasts = (text: string, type: string, helper: string, literal: (inner: string) => string | null): string => {
+  const needle = `static_cast<${type}>(`
   let result = ''
   let from = 0
   let at = text.indexOf(needle)
@@ -71,13 +68,25 @@ export const foldDoubleCasts = (text: string): string => {
     const open = at + needle.length - 1
     const close = matchingParenthesis(text, open)
     if (close < 0) break
-    const inner = foldDoubleCasts(text.slice(open + 1, close))
-    result += text.slice(from, at) + (doubleLiteralOf(unwrapParentheses(inner)) ?? `gDouble(${inner})`)
+    const inner = foldCasts(text.slice(open + 1, close), type, helper, literal)
+    result += text.slice(from, at) + (literal(unwrapParentheses(inner)) ?? `${helper}(${inner})`)
     from = close + 1
     at = text.indexOf(needle, from)
   }
   return from === 0 ? text : result + text.slice(from)
 }
+
+/**
+ * `static_cast<double>(x)` as `gToDouble(x)`, and as the bare literal when `x` is a
+ * number written out -- which is exactly what the cast of one means.
+ */
+export const foldDoubleCasts = (text: string): string => foldCasts(text, 'double', 'gToDouble', doubleLiteralOf)
+
+/** `static_cast<bool>(x)` as `gToBool(x)`. */
+export const foldBoolCasts = (text: string): string => foldCasts(text, 'bool', 'gToBool', () => null)
+
+/** `static_cast<std::size_t>(x)` as `gToSizeT(x)`. */
+export const foldSizeCasts = (text: string): string => foldCasts(text, 'std::size_t', 'gToSizeT', () => null)
 
 const throwHelpers: ReadonlyArray<readonly [name: string, kind: string, message: string]> = [
   ['gThrowRedefine', 'TypeError', 'Cannot redefine property'],
@@ -411,25 +420,33 @@ export const unwrapRedundantParentheses = (text: string): string => {
       }
       if (character !== '(') continue
       let end = index + 1
-      const quoted = input[end] === '"'
-      const startsWithDigit = input[end] !== undefined && (input[end] as string) >= '0' && (input[end] as string) <= '9'
+      // A leading `*` or `-` (not `--`) makes the atom a unary expression, which never takes a member access or an operand after it.
+      const unary = (input[end] === '*' || input[end] === '-') && input[end + 1] !== input[end] ? (input[end] as string) : ''
+      if (unary !== '') end += 1
+      const quoted = unary === '' && input[end] === '"'
       if (quoted) {
         // A string literal is a primary expression: nothing the parentheses could group.
         end += 1
         while (end < input.length && input[end] !== '"') end += input[end] === '\\' ? 2 : 1
         end += 1
       } else {
-        while (end < input.length && (isIdentifierCharacter(input[end]) || (startsWithDigit && input[end] === '.'))) end += 1
+        // A name, a number, or a path through members (`a.b`, `p->q`, `ns::x`).
+        while (end < input.length) {
+          const here = input[end]
+          if (isIdentifierCharacter(here) || here === '.' || here === ':') end += 1
+          else if (here === '-' && input[end + 1] === '>') end += 2
+          else break
+        }
       }
-      if (end === index + 1 || input[end] !== ')') continue
+      if (end === index + 1 + (unary === '' ? 0 : 1) || input[end] !== ')') continue
       const atom = input.slice(index + 1, end)
-      const first = atom[0] as string
-      const numeric = (first >= '0' && first <= '9') || quoted
+      const first = atom[unary === '' ? 0 : 1] as string
+      const numeric = (first >= '0' && first <= '9') || quoted || unary !== ''
       // What comes before: an operator or a separator, never a name, a closing bracket or `>`.
       let before = index - 1
       while (before >= 0 && input[before] === ' ') before -= 1
       const previous = before < 0 ? '' : (input[before] as string)
-      if (previous === '' || !'(,={;?:+-*/%&|^!~'.includes(previous)) continue
+      if (previous === '' || !(unary === '' ? '(,={;?:+-*/%&|^!~' : '(,={;?:').includes(previous)) continue
       if (previous === '(') {
         let word = before - 1
         while (word >= 0 && input[word] === ' ') word -= 1
@@ -442,14 +459,84 @@ export const unwrapRedundantParentheses = (text: string): string => {
       while (after < input.length && input[after] === ' ') after += 1
       const next = after < input.length ? (input[after] as string) : ''
       const memberAccess = !numeric && (next === '.' || (next === '-' && input[after + 1] === '>') || next === '[')
-      if (!(memberAccess || next === '' || ')],;}+*/%<>=!&|^?:'.includes(next))) continue
+      if (!(memberAccess || next === '' || (unary === '' ? ')],;}+*/%<>=!&|^?:' : ')],;}').includes(next))) continue
       result += input.slice(copied, index) + atom
       copied = end + 1
       index = end
     }
     return copied === 0 ? input : result + input.slice(copied)
   }
-  const withoutAtoms = unwrapAtoms(unwrapAtoms(text))
+  // `f((x))` and `a * ((b + c))`: parentheses whose whole content is one more pair.
+  const unwrapDoubles = (input: string): string => {
+    let result = ''
+    let copied = 0
+    for (let index = 0; index < input.length; index += 1) {
+      const character = input[index]
+      if (character === '"' || character === "'") {
+        if (character === "'" && index > 0 && isIdentifierCharacter(input[index - 1])) continue
+        index += 1
+        while (index < input.length && input[index] !== character) index += input[index] === '\\' ? 2 : 1
+        continue
+      }
+      if (character !== '(' || input[index + 1] !== '(' || index < copied) continue
+      const inner = matchingParenthesis(input, index + 1)
+      if (inner < 0 || input[inner + 1] !== ')') continue
+      let before = index - 1
+      while (before >= 0 && input[before] === ' ') before -= 1
+      const previous = before < 0 ? '' : (input[before] as string)
+      if (isIdentifierCharacter(previous) || previous === '>') {
+        let wordStart = before
+        while (wordStart >= 0 && isIdentifierCharacter(input[wordStart])) wordStart -= 1
+        if (wordsBeforeParenthesisThatKeepItMeaningful.has(input.slice(wordStart + 1, before + 1))) continue
+        if (hasTopLevelComma(input.slice(index + 2, inner))) continue
+      }
+      result += `${input.slice(copied, index)}(${input.slice(index + 2, inner)})`
+      copied = inner + 2
+      index = inner + 1
+    }
+    return copied === 0 ? input : result + input.slice(copied)
+  }
+  // A parenthesised expression that is a whole argument or a whole initialiser element: `f(a, (b + c))`.
+  const unwrapArguments = (input: string): string => {
+    let result = ''
+    let copied = 0
+    for (let index = 0; index < input.length; index += 1) {
+      const character = input[index]
+      if (character === '"' || character === "'") {
+        if (character === "'" && index > 0 && isIdentifierCharacter(input[index - 1])) continue
+        index += 1
+        while (index < input.length && input[index] !== character) index += input[index] === '\\' ? 2 : 1
+        continue
+      }
+      if (character !== '(' || index < copied) continue
+      let before = index - 1
+      while (before >= 0 && input[before] === ' ') before -= 1
+      const previous = before < 0 ? '' : (input[before] as string)
+      if (previous !== ',' && previous !== '(' && previous !== '{') continue
+      const close = matchingParenthesis(input, index)
+      if (close < 0) continue
+      let after = close + 1
+      while (after < input.length && input[after] === ' ') after += 1
+      const next = input[after]
+      if (next !== ',' && next !== ')' && next !== '}') continue
+      if (previous === '(') {
+        // The parenthesis must open a call or a statement head, not group something larger, and not be one whose meaning depends on its parentheses.
+        let word = before - 1
+        while (word >= 0 && input[word] === ' ') word -= 1
+        if (word < 0 || !(isIdentifierCharacter(input[word]) || input[word] === '>')) continue
+        let wordStart = word
+        while (wordStart >= 0 && isIdentifierCharacter(input[wordStart])) wordStart -= 1
+        if (wordsBeforeParenthesisThatKeepItMeaningful.has(input.slice(wordStart + 1, word + 1))) continue
+      }
+      const content = input.slice(index + 1, close)
+      if (content === '' || hasTopLevelComma(content)) continue
+      result += input.slice(copied, index) + content
+      copied = close + 1
+      index = close
+    }
+    return copied === 0 ? input : result + input.slice(copied)
+  }
+  const withoutAtoms = unwrapAtoms(unwrapAtoms(unwrapArguments(unwrapDoubles(unwrapDoubles(unwrapDoubles(text))))))
   return withoutAtoms
     .split('\n')
     .map((line) => {
@@ -923,7 +1010,9 @@ export const inlineScalarCopies = (text: string): string => {
       const source = trimmed.slice(equals + 3, -1)
       if (
         equals < 0 ||
-        (!(cell[0] === 'v' && isDigits(cell.slice(1))) && !source.endsWith('_default')) ||
+        (!(cell[0] === 'v' && isDigits(cell.slice(1))) &&
+          !source.endsWith('_default') &&
+          !(cell.startsWith(`${source}_`) && isDigits(cell.slice(source.length + 1)))) ||
         source === '' ||
         ![...source].every(isIdentifierCharacter)
       )
@@ -1055,13 +1144,8 @@ export const dropOptionalWrappers = (text: string): string =>
     })
     .join('\n')
 
-/**
- * `std::string_view{"ball", 4}` as `"ball"sv`: the same view, with the length the compiler already counted. Taken only
- * when the length written is the one the literal really has, so a spelling this scan does not follow (`\x41`, `é`)
- * keeps its explicit form.
- */
-export const foldStringViews = (text: string): string => {
-  const needle = 'std::string_view{"'
+const foldStringViewForm = (text: string, open: string, close: string): string => {
+  const needle = `std::string_view${open}"`
   let result = ''
   let copied = 0
   for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length)) {
@@ -1085,16 +1169,23 @@ export const foldStringViews = (text: string): string => {
       index += point > 0xffff ? 2 : 1
     }
     if (!understood || text[index] !== '"') continue
-    const close = index + 1
-    let end = close + 2
-    if (text.slice(close, end) !== ', ') continue
-    while (end < text.length && text[end] !== undefined && (text[end] as string) >= '0' && (text[end] as string) <= '9') end += 1
-    if (text[end] !== '}' || end === close + 2 || Number(text.slice(close + 2, end)) !== length) continue
-    result += `${text.slice(copied, at)}${text.slice(at + 'std::string_view{'.length, close)}sv`
+    const quote = index + 1
+    let end = quote + 2
+    if (text.slice(quote, end) !== ', ') continue
+    while (end < text.length && (text[end] as string) >= '0' && (text[end] as string) <= '9') end += 1
+    if (text[end] !== close || end === quote + 2 || Number(text.slice(quote + 2, end)) !== length) continue
+    result += `${text.slice(copied, at)}${text.slice(at + 'std::string_view'.length + 1, quote)}sv`
     copied = end + 1
   }
   return copied === 0 ? text : result + text.slice(copied)
 }
+
+/**
+ * `std::string_view{"ball", 4}` and `std::string_view("ball", 4)` as `"ball"sv`: the same view, with the length the
+ * compiler already counted. Taken only when the length written is the one the literal really has, so a spelling this
+ * scan does not follow (`\x41`, `é`) keeps its explicit form.
+ */
+export const foldStringViews = (text: string): string => foldStringViewForm(foldStringViewForm(text, '{', '}'), '(', ')')
 
 /** The index of the `;` that ends the statement starting at `from`, outside strings and brackets; -1 when there is none. */
 const statementEnd = (line: string, from: number): number => {
@@ -1188,12 +1279,14 @@ export const foldFieldSetters = (text: string): string => {
     result.push(line)
     const range = ranges.get(index)
     const trimmed = line.trim()
-    if (range === undefined || !trimmed.startsWith(prefix) || !trimmed.endsWith(' = false;')) return
-    const member = trimmed.slice(prefix.length, -' = false;'.length)
+    const declaration = trimmed.startsWith('static inline ') ? trimmed.slice('static inline '.length) : trimmed
+    const initial = [' = false;', ' = true;'].find((suffix) => declaration.endsWith(suffix))
+    if (range === undefined || initial === undefined || !declaration.startsWith(prefix)) return
+    const member = declaration.slice(prefix.length, -initial.length)
     if (!used.has(member) || mentions(range[0], range[1], `set_${member}`)) return
     const indent = line.slice(0, line.length - line.trimStart().length)
     result.push(
-      `${indent}template <typename V> void set_${member}(V&& value) { ${member} = std::forward<V>(value); gea_present_${member} = true; }`
+      `${indent}template <typename V> void set_${member}(V&& gea_value) { ${member} = std::forward<V>(gea_value); gea_present_${member} = true; }`
     )
   })
   return result.join('\n')
@@ -1251,21 +1344,525 @@ export const foldEmptyOptionalArguments = (text: string): string => {
   return copied === 0 ? text : result + text.slice(copied)
 }
 
+/** The index just past the `>` closing the `<` at `open`, counting nested angle brackets; -1 when unbalanced. */
+const matchingAngle = (text: string, open: number): number => {
+  let depth = 0
+  for (let index = open; index < text.length; index += 1) {
+    if (text[index] === '<') depth += 1
+    else if (text[index] === '>') {
+      depth -= 1
+      if (depth === 0) return index
+    }
+  }
+  return -1
+}
+
+/**
+ * `gCallable<S>{gCallable<S>::entryWithFacts<&thunk>(name, n, source), env}` as `gCallableOf<&thunk>(name, n, source,
+ * env)`: the signature `S` is the destination's, which already states it, and the thunk's type fixes it a second time.
+ * Taken only when both spellings of `S` are identical, which is how the printer writes a function object.
+ */
+export const foldCallableInitialisers = (text: string): string => {
+  const head = 'gCallable<'
+  let result = ''
+  let copied = 0
+  for (let at = text.indexOf(head); at >= 0; at = text.indexOf(head, at + head.length)) {
+    if (at < copied || isIdentifierCharacter(text[at - 1]) || text[at - 1] === ':') continue
+    // Only where the destination names its own type (`x = ...`, `T x = ...`): as an argument the parameter may be deduced.
+    if (text.slice(Math.max(0, at - 3), at) !== ' = ') continue
+    const signatureEnd = matchingAngle(text, at + head.length - 1)
+    if (signatureEnd < 0) continue
+    const type = text.slice(at, signatureEnd + 1)
+    const factory = `{${type}::entryWithFacts<`
+    if (!text.startsWith(factory, signatureEnd + 1)) continue
+    const thunkOpen = signatureEnd + factory.length
+    const thunkEnd = matchingAngle(text, thunkOpen)
+    if (thunkEnd < 0 || text[thunkEnd + 1] !== '(') continue
+    const argumentsEnd = matchingParenthesis(text, thunkEnd + 1)
+    if (argumentsEnd < 0 || text.slice(argumentsEnd + 1, argumentsEnd + 3) !== ', ') continue
+    // The environment runs to the brace that closes the initialiser.
+    let depth = 0
+    let environmentEnd = -1
+    for (let index = argumentsEnd + 3; index < text.length; index += 1) {
+      const character = text[index] as string
+      if (character === '"') {
+        index += 1
+        while (index < text.length && text[index] !== '"') index += text[index] === '\\' ? 2 : 1
+      } else if ('([{'.includes(character)) depth += 1
+      else if (')]}'.includes(character)) {
+        if (depth === 0) {
+          environmentEnd = character === '}' ? index : -1
+          break
+        }
+        depth -= 1
+      }
+    }
+    if (environmentEnd < 0) continue
+    const thunk = text.slice(thunkOpen + 1, thunkEnd)
+    const callArguments = text.slice(thunkEnd + 2, argumentsEnd)
+    const environment = text.slice(argumentsEnd + 3, environmentEnd)
+    result += `${text.slice(copied, at)}gCallableOf<${thunk}>(${callArguments}, ${environment})`
+    copied = environmentEnd + 1
+  }
+  return copied === 0 ? text : result + text.slice(copied)
+}
+
+const keyVariables = ['gea_name', '__gea_key', 'gea_json_key', 'gea_spread_key', '__gea_ordered_key']
+
+/**
+ * `gea_name == "kind"` as `gea_name == "kind"sv`: the key being tested is text the reflection protocol hands over as a
+ * view, so the literal is compared as a view whose length is a constant, not measured at run time with `strlen`.
+ */
+export const foldKeyComparisons = (text: string): string => {
+  let result = ''
+  let copied = 0
+  let at = 0
+  while (at < text.length) {
+    const equals = text.indexOf(' == "', at)
+    const differs = text.indexOf(' != "', at)
+    const found = equals < 0 ? differs : differs < 0 ? equals : Math.min(equals, differs)
+    if (found < 0) break
+    at = found + 5
+    const name = keyVariables.find(
+      (variable) => text.endsWith(variable, found) && !isIdentifierCharacter(text[found - variable.length - 1])
+    )
+    if (name === undefined) continue
+    let end = at
+    while (end < text.length && text[end] !== '"') end += text[end] === '\\' ? 2 : 1
+    if (end >= text.length || text.slice(end + 1, end + 3) === 'sv') continue
+    result += `${text.slice(copied, end + 1)}sv`
+    copied = end + 1
+    at = end + 1
+  }
+  return copied === 0 ? text : result + text.slice(copied)
+}
+
+interface IfGuard {
+  readonly condition: string
+  readonly label: string
+}
+
+/** `if (C) goto block3;`: the test and the label it skips to, or null. */
+const ifGuardOf = (trimmed: string): IfGuard | null => {
+  if (!trimmed.startsWith('if (') || !trimmed.endsWith(';')) return null
+  const at = trimmed.lastIndexOf(') goto ')
+  if (at < 4 || matchingParenthesis(trimmed, 3) !== at) return null
+  const label = trimmed.slice(at + ') goto '.length, -1)
+  if (!label.startsWith('block') || ![...label].every(isIdentifierCharacter)) return null
+  return { condition: trimmed.slice(4, at), label }
+}
+
+interface IfNode {
+  readonly condition: string
+  /** Line indices of the branch taken when `condition` holds: from, to (exclusive). */
+  readonly then: readonly [number, number]
+  readonly otherwise: IfNode | readonly [number, number] | null
+}
+
+interface ParsedIf {
+  readonly node: IfNode
+  /** Index of the last line this structure owns: its join label. */
+  readonly end: number
+  /** The label every branch ends by jumping to, when it has an else. */
+  readonly join: string | null
+  /** Jumps to `join` the structure accounts for. */
+  readonly jumps: number
+  /** The labels it removes besides `join`, each of which only its own guard may mention. */
+  readonly owned: readonly string[]
+}
+
+const isIfNode = (value: IfNode | readonly [number, number] | null): value is IfNode => value !== null && !Array.isArray(value)
+
+/**
+ * `if (!(C)) goto L; { A } L:` as `if (C) { A }`, `if (!(C)) goto L; { A } goto J; L: { B } J:` as `if (C) { A } else { B }`,
+ * and a chain of those sharing one join as `if / else if / else`. Taken only when the labels are jumped to by nothing but
+ * the structure itself, so the gotos it removes were the whole of its control flow.
+ */
+export const foldIfStatements = (text: string): string => {
+  const lines = text.split('\n')
+  const out: string[] = []
+  let start = -1
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] as string
+    if (start < 0) {
+      if (isFunctionHeader(line)) start = index
+      else out.push(line)
+      continue
+    }
+    if (line !== '}') continue
+    out.push(...foldIfsInFunction(lines.slice(start, index + 1)))
+    start = -1
+  }
+  if (start >= 0) out.push(...lines.slice(start))
+  return out.join('\n')
+}
+
+const foldIfsInFunction = (original: readonly string[]): string[] => {
+  let lines = [...original]
+  if (!lines.some((line) => ifGuardOf(line.trim()) !== null)) return lines
+  for (let pass = 0; pass < 2000; pass += 1) {
+    const shapes = shapesOfLines(lines)
+    if (shapes === null) return lines
+    const levelOf = (index: number): number => (shapes[index] as LineShape).level
+    const referencesTo = (label: string, from = 0, to = lines.length): number => {
+      let count = 0
+      for (let at = from; at < to; at += 1) eachIdentifier(lines[at] as string, (token) => (count += token === label ? 1 : 0))
+      return count
+    }
+    const labelIndex = (from: number, level: number, label: string): number => {
+      for (let at = from; at < lines.length; at += 1) {
+        if (levelOf(at) < level) return -1
+        if (levelOf(at) === level && labelDefinedBy((lines[at] as string).trim()) === label) return at
+      }
+      return -1
+    }
+    const parse = (at: number, join: string | null): ParsedIf | null => {
+      const guard = ifGuardOf((lines[at] as string).trim())
+      if (guard === null) return null
+      const level = levelOf(at)
+      const label = labelIndex(at + 1, level, guard.label)
+      if (label < 0 || label === at + 1) return null
+      if (join !== null && guard.label === join) {
+        return {
+          node: { condition: negated(guard.condition), then: [at + 1, label], otherwise: null },
+          end: label,
+          join,
+          jumps: 1,
+          owned: []
+        }
+      }
+      const last = (lines[label - 1] as string).trim()
+      const jump = last.startsWith('goto ') && last.endsWith(';') ? last.slice('goto '.length, -1) : null
+      if (jump === null) {
+        if (join !== null) return null
+        return {
+          node: { condition: negated(guard.condition), then: [at + 1, label], otherwise: null },
+          end: label,
+          join: null,
+          jumps: 0,
+          owned: [guard.label]
+        }
+      }
+      if (join !== null && jump !== join) return null
+      if (label - 1 === at + 1) return null
+      const joinIndex = labelIndex(label + 1, level, jump)
+      if (joinIndex < 0 || joinIndex === label + 1) return null
+      const inner = ifGuardOf((lines[label + 1] as string).trim()) === null ? null : parse(label + 1, jump)
+      if (inner !== null && inner.end === joinIndex) {
+        return {
+          node: { condition: negated(guard.condition), then: [at + 1, label - 1], otherwise: inner.node },
+          end: joinIndex,
+          join: jump,
+          jumps: 1 + inner.jumps,
+          owned: [guard.label, ...inner.owned]
+        }
+      }
+      return {
+        node: { condition: negated(guard.condition), then: [at + 1, label - 1], otherwise: [label + 1, joinIndex] },
+        end: joinIndex,
+        join: jump,
+        jumps: 1,
+        owned: [guard.label]
+      }
+    }
+    // Every branch as the lines it contributes, or null when one cannot be moved into a block of its own.
+    const bodyOf = (range: readonly [number, number], indent: string): string[] | null => {
+      const [from, to] = range
+      if (from >= to) return null
+      const braced =
+        (lines[from] as string).trim() === '{' &&
+        (lines[to - 1] as string).trim() === '}' &&
+        levelOf(from) === levelOf(to - 1) &&
+        Array.from({ length: to - from - 2 }, (_, offset) => from + 1 + offset).every((at) => levelOf(at) > levelOf(from))
+      if (braced) return lines.slice(from + 1, to - 1)
+      for (let at = from; at < to; at += 1) {
+        const entry = (lines[at] as string).trim()
+        if (declaredNameOf(entry) !== null || labelDefinedBy(entry) !== null) return null
+      }
+      return lines
+        .slice(from, to)
+        .map((entry) => (entry === '' ? entry : `  ${entry.startsWith(indent) ? entry : `${indent}${entry.trim()}`}`))
+    }
+    const render = (node: IfNode, indent: string, opening: string): string[] | null => {
+      const body = bodyOf(node.then, indent)
+      if (body === null) return null
+      const result = [`${indent}${opening}if (${node.condition}) {`, ...body]
+      if (isIfNode(node.otherwise)) {
+        const rest = render(node.otherwise, indent, '} else ')
+        return rest === null ? null : [...result, ...rest]
+      }
+      if (node.otherwise !== null) {
+        const otherwise = bodyOf(node.otherwise, indent)
+        if (otherwise === null) return null
+        return [...result, `${indent}} else {`, ...otherwise, `${indent}}`]
+      }
+      return [...result, `${indent}}`]
+    }
+    let changed = false
+    for (let at = 0; at < lines.length && !changed; at += 1) {
+      const parsed = parse(at, null)
+      if (parsed === null) continue
+      if (parsed.join !== null && referencesTo(parsed.join) !== parsed.jumps + 1) continue
+      if (parsed.owned.some((label) => referencesTo(label) !== 2)) continue
+      // A label inside the structure that something outside it jumps to must stay reachable.
+      let escapes = false
+      for (let inside = at + 1; inside < parsed.end && !escapes; inside += 1) {
+        const defined = labelDefinedBy((lines[inside] as string).trim())
+        if (defined !== null && !parsed.owned.includes(defined) && referencesTo(defined) !== referencesTo(defined, at, parsed.end + 1))
+          escapes = true
+      }
+      if (escapes) continue
+      const indent = (lines[at] as string).slice(0, (lines[at] as string).length - (lines[at] as string).trimStart().length)
+      const rendered = render(parsed.node, indent, '')
+      if (rendered === null) continue
+      lines = [...lines.slice(0, at), ...rendered, ...lines.slice(parsed.end + 1)]
+      changed = true
+    }
+    if (!changed) return lines
+  }
+  return lines
+}
+
+/** Whether `expression` has, outside any bracket or string, an operator that binds looser than `&&` and so needs parentheses as its operand. */
+const hasLooseOperator = (expression: string, loosest: '&&' | '||'): boolean => {
+  let depth = 0
+  for (let index = 0; index < expression.length; index += 1) {
+    const character = expression[index] as string
+    if (character === '"' || character === "'") {
+      index += 1
+      while (index < expression.length && expression[index] !== character) index += expression[index] === '\\' ? 2 : 1
+    } else if ('([{'.includes(character)) depth += 1
+    else if (')]}'.includes(character)) depth -= 1
+    else if (depth === 0) {
+      const pair = expression.slice(index, index + 2)
+      if (
+        character === ',' ||
+        character === '?' ||
+        (character === '=' &&
+          expression[index - 1] !== '=' &&
+          expression[index - 1] !== '!' &&
+          expression[index - 1] !== '<' &&
+          expression[index - 1] !== '>' &&
+          expression[index + 1] !== '=')
+      )
+        return true
+      if (pair === '||' && loosest === '&&') return true
+    }
+  }
+  return false
+}
+
+/** `bool v12;`: a declaration with no initialiser of a numbered bool cell. */
+const isBoolCellDeclaration = (trimmed: string): boolean =>
+  trimmed.startsWith('bool v') && trimmed.endsWith(';') && isDigits(trimmed.slice(6, -1))
+
+const operandOf = (expression: string, operator: '&&' | '||'): string =>
+  hasLooseOperator(expression, operator) ? `(${expression})` : expression
+
+/**
+ * `a && b` and `a || b` as the printer lowers them, a value chosen by a branch:
+ *
+ *     bool v0;  ...  bool c = a;  if (!c) goto block2;  v0 = b;  goto block3;  block2:  v0 = c;  block3:
+ *
+ * is `v0 = c && b;`, and `c`'s own definition moves into the expression when nothing else reads it. The result cell must
+ * be a `bool` (the other arm copies the tested value into it, which is only the same thing as `&&`'s answer for a bool),
+ * and the right operand one plain assignment, so `b` is evaluated under exactly the same condition as before.
+ */
+export const foldShortCircuits = (text: string): string => {
+  const lines = text.split('\n')
+  const out: string[] = []
+  let start = -1
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] as string
+    if (start < 0) {
+      if (isFunctionHeader(line)) start = index
+      else out.push(line)
+      continue
+    }
+    if (line !== '}') continue
+    out.push(...foldShortCircuitsInFunction(lines.slice(start, index + 1)))
+    start = -1
+  }
+  if (start >= 0) out.push(...lines.slice(start))
+  return out.join('\n')
+}
+
+const foldShortCircuitsInFunction = (original: readonly string[]): string[] => {
+  let lines = [...original]
+  const referencesTo = (name: string, skip: (trimmed: string) => boolean = () => false): number => {
+    let count = 0
+    for (const entry of lines) {
+      if (skip(entry.trim())) continue
+      eachIdentifier(entry, (token, start) => (count += token === name && !isMemberOrQualified(entry, start) ? 1 : 0))
+    }
+    return count
+  }
+  for (let pass = 0; pass < 2000; pass += 1) {
+    let changed = false
+    for (let at = 0; at + 5 < lines.length && !changed; at += 1) {
+      const guard = ifGuardOf((lines[at] as string).trim())
+      if (guard === null) continue
+      const [assign, jump, label, otherwise, join] = lines.slice(at + 1, at + 6).map((entry) => entry.trim()) as [
+        string,
+        string,
+        string,
+        string,
+        string
+      ]
+      // `if (!c) goto L` is `&&`; `if (c) goto L` is `||`.
+      const negatedGuard = guard.condition.startsWith('!')
+      const tested = negatedGuard ? guard.condition.slice(1) : guard.condition
+      const operator = negatedGuard ? '&&' : '||'
+      if (tested === '' || ![...tested].every(isIdentifierCharacter)) continue
+      const cell = assign.slice(0, assign.indexOf(' = '))
+      if (cell === '' || !assign.endsWith(';') || !assign.startsWith(`${cell} = `) || !isDigits(cell.slice(1)) || cell[0] !== 'v') continue
+      const joinLabel = jump.startsWith('goto ') && jump.endsWith(';') ? jump.slice('goto '.length, -1) : null
+      if (joinLabel === null || label !== `${guard.label}:` || otherwise !== `${cell} = ${tested};` || join !== `${joinLabel}:`) continue
+      if (referencesTo(guard.label) !== 2 || referencesTo(joinLabel) !== 2) continue
+      const declaredBool = lines.slice(0, at).some((entry) => entry.trim() === `bool ${cell};`)
+      if (!declaredBool) continue
+      const right = assign.slice(cell.length + 3, -1)
+      // The tested value's own definition goes into the expression when this diamond is its only reader.
+      let definitionAt = at - 1
+      while (definitionAt > 0 && isBoolCellDeclaration((lines[definitionAt] as string).trim())) definitionAt -= 1
+      const previous = definitionAt >= 0 ? (lines[definitionAt] as string).trim() : ''
+      const definition = previous.startsWith(`bool ${tested} = `)
+        ? `bool ${tested} = `
+        : previous.startsWith(`${tested} = `)
+          ? `${tested} = `
+          : null
+      const readers = referencesTo(tested, (trimmed) => trimmed === `bool ${tested};`)
+      let left = tested
+      let removePrevious = false
+      if (definition !== null && previous.endsWith(';') && readers === 3 && isDigits(tested.slice(1)) && tested[0] === 'v') {
+        left = previous.slice(definition.length, -1)
+        removePrevious = true
+      }
+      const replacement = `${(lines[at] as string).slice(0, (lines[at] as string).length - (lines[at] as string).trimStart().length)}${cell} = ${operandOf(left, operator)} ${operator} ${operandOf(right, operator)};`
+      lines = [...lines.slice(0, at), replacement, ...lines.slice(at + 6)]
+      if (removePrevious) lines.splice(definitionAt, 1)
+      if (removePrevious) lines = lines.filter((entry) => entry.trim() !== `bool ${tested};`)
+      changed = true
+    }
+    if (!changed) return lines
+  }
+  return lines
+}
+
+/**
+ * `bool v2 = x;  return v2;` as `return x;`: a value named only to be returned. Taken when the cell is read nowhere else
+ * in the function and has the function's own return type, so the value is converted the same way on the way out.
+ */
+export const foldReturnedValues = (text: string): string => {
+  // One fold exposes the next (`bool a = ..; bool b = a && ..; return b;`), so it runs to a fixed point.
+  for (let pass = 0; pass < 8; pass += 1) {
+    const next = foldReturnedValuesOnce(text)
+    if (next === text) return text
+    text = next
+  }
+  return text
+}
+
+const foldReturnedValuesOnce = (text: string): string => {
+  const lines = text.split('\n')
+  const out: string[] = []
+  let start = -1
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] as string
+    if (start < 0) {
+      if (isFunctionHeader(line)) start = index
+      else out.push(line)
+      continue
+    }
+    if (line !== '}') continue
+    const body = lines.slice(start, index + 1)
+    const header = body[0] as string
+    const folded: string[] = []
+    body.forEach((entry, offset) => {
+      const trimmed = entry.trim()
+      const previous = folded[folded.length - 1]
+      if (offset > 0 && previous !== undefined && trimmed.startsWith('return ') && trimmed.endsWith(';')) {
+        const value = trimmed.slice('return '.length, -1)
+        const before = previous.trim()
+        // `bool v1 = X;  return v1 && Y;`: the value is only the left operand of the answer.
+        const operator = value.includes(' && ') ? '&&' : value.includes(' || ') ? '||' : null
+        const cell = before.startsWith('bool v') ? before.slice('bool '.length, before.indexOf(' = ')) : ''
+        if (
+          operator !== null &&
+          cell !== '' &&
+          isDigits(cell.slice(1)) &&
+          before.endsWith(';') &&
+          value.startsWith(`${cell} ${operator} `) &&
+          header.startsWith('bool ')
+        ) {
+          let uses = 0
+          for (const other of body)
+            eachIdentifier(other, (token, from) => (uses += token === cell && !isMemberOrQualified(other, from) ? 1 : 0))
+          if (uses === 2) {
+            const left = before.slice(`bool ${cell} = `.length, -1)
+            const rest = value.slice(`${cell} ${operator} `.length)
+            folded[folded.length - 1] =
+              `${previous.slice(0, previous.length - previous.trimStart().length)}return ${operandOf(left, operator)} ${operator} ${rest};`
+            return
+          }
+        }
+        const marker = before.indexOf(` ${value} = `)
+        const type = marker > 0 ? before.slice(0, marker) : ''
+        if (value[0] === 'v' && isDigits(value.slice(1)) && type !== '' && before.endsWith(';') && header.startsWith(`${type} `)) {
+          let reads = 0
+          for (const other of body)
+            eachIdentifier(other, (token, from) => (reads += token === value && !isMemberOrQualified(other, from) ? 1 : 0))
+          if (reads === 2) {
+            folded[folded.length - 1] =
+              `${previous.slice(0, previous.length - previous.trimStart().length)}return ${before.slice(marker + value.length + 4, -1)};`
+            return
+          }
+        }
+      }
+      folded.push(entry)
+    })
+    out.push(...folded)
+    start = -1
+  }
+  if (start >= 0) out.push(...lines.slice(start))
+  return out.join('\n')
+}
+
 /** Every text-level respelling of a unit, in the order that lets each one see what the one before it made. */
 export const makeReadable = (text: string): string =>
   nameValues(
     inlineScalarCopies(
       foldRangeVariables(
-        reconstructLoops(
-          mergeDeclarations(
-            unwrapFunctionBlock(
-              foldDefaultedParameters(
-                indentBlocks(
-                  simplifyConditions(
-                    foldFieldSetters(
-                      unwrapRedundantParentheses(
-                        dropOptionalWrappers(
-                          dropDefaultedAttributes(foldThrowHelpers(foldStringViews(foldDoubleCasts(foldEmptyOptionalArguments(text)))))
+        foldReturnedValues(
+          unwrapFunctionBlock(
+            mergeDeclarations(
+              foldIfStatements(
+                foldShortCircuits(
+                  reconstructLoops(
+                    mergeDeclarations(
+                      unwrapFunctionBlock(
+                        foldDefaultedParameters(
+                          indentBlocks(
+                            simplifyConditions(
+                              foldFieldSetters(
+                                unwrapRedundantParentheses(
+                                  dropOptionalWrappers(
+                                    dropDefaultedAttributes(
+                                      foldThrowHelpers(
+                                        foldStringViews(
+                                          foldKeyComparisons(
+                                            foldSizeCasts(
+                                              foldBoolCasts(foldDoubleCasts(foldCallableInitialisers(foldEmptyOptionalArguments(text))))
+                                            )
+                                          )
+                                        )
+                                      )
+                                    )
+                                  )
+                                )
+                              )
+                            )
+                          )
                         )
                       )
                     )
