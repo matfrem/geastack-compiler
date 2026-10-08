@@ -1417,9 +1417,13 @@ export const foldKeyComparisons = (text: string): string => {
   let result = ''
   let copied = 0
   let at = 0
+  // Each search resumes only when the position it found has been passed: a pattern the text never contains would
+  // otherwise be searched for to the end of a multi-megabyte unit once per match of the other.
+  let equals = text.indexOf(' == "')
+  let differs = text.indexOf(' != "')
   while (at < text.length) {
-    const equals = text.indexOf(' == "', at)
-    const differs = text.indexOf(' != "', at)
+    if (equals >= 0 && equals < at) equals = text.indexOf(' == "', at)
+    if (differs >= 0 && differs < at) differs = text.indexOf(' != "', at)
     const found = equals < 0 ? differs : differs < 0 ? equals : Math.min(equals, differs)
     if (found < 0) break
     at = found + 5
