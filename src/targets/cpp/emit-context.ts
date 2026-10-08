@@ -3033,7 +3033,7 @@ const renderMutableEmitContextFields: ReadonlySet<string> = new Set([
   'taskValues',
   // Render bookkeeping by the same test: the pieces (receiver text, accessor, key text) an absence-capable array read was
   // spelled from, recorded as that read renders and read back by the presence-checked conversion that consumes it.
-  // What was printed is what it holds; the settled fact is only which conversions assert presence (`presence: 'checked'`).
+  // What was printed is what it holds; the settled fact is only which conversions assert presence.
   'checkedElementReads',
   // Naming again, by the same test as `valueNames`: what these two hold is the
   // C++ NAME of a scratch local this render minted for a dynamic iterator --
