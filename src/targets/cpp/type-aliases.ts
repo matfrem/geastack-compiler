@@ -53,6 +53,8 @@ const typeAliases = new Map(types)
 export const runtimeIncludeLine = '#include "gea_runtime.h"'
 
 export const typeAliasBlock = [
+  'using namespace std::string_view_literals;',
+  'inline constexpr gea::EmptyOptional gEmpty{};',
   ...templates.map(([from, to]) => `template <class... gArguments> using ${to} = ${from}<gArguments...>;`),
   ...types.map(([from, to]) => `using ${to} = ${from};`),
   `using ${compound.to} = ${compound.from};`,

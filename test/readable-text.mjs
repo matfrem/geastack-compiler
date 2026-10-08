@@ -9,10 +9,16 @@ import { structuredJumpsIn } from '../dist/targets/cpp/emit-loops.js'
 import {
   displayPathsOf,
   dropDefaultedAttributes,
+  dropOptionalWrappers,
+  foldDefaultedParameters,
   foldDoubleCasts,
+  foldEmptyOptionalArguments,
+  foldFieldSetters,
+  foldStringViews,
   foldRangeVariables,
   foldThrowHelpers,
   indentBlocks,
+  inlineScalarCopies,
   makeReadable,
   mergeDeclarations,
   nameBodyBindings,
@@ -20,6 +26,7 @@ import {
   nameValues,
   reconstructLoops,
   simplifyConditions,
+  unwrapFunctionBlock,
   unwrapRedundantParentheses
 } from '../dist/targets/cpp/readable-text.js'
 import { abbreviateTypeSpellings, withTypeAliases } from '../dist/targets/cpp/type-aliases.js'
@@ -275,4 +282,123 @@ test('the whole pipeline on a counted loop', () => {
   assert.match(readable, /for \(long long i = 0; i < n; \+\+i\) \{/)
   assert.match(readable, /gDouble\(i\)/)
   assert.doesNotMatch(readable, /\bgoto\b|\bcontinue\b/)
+})
+
+test('a string literal does not make a parameter name look taken', () => {
+  const texts = ['void f(gRef<GcDeck> gea_arg_0) {', '  r->name = gString("deck"); use(gea_arg_0);', '}']
+  assert.deepEqual(nameBodyParameters(texts, ['deck']), ['void f(gRef<GcDeck> deck) {', '  r->name = gString("deck"); use(deck);', '}'])
+})
+
+test('a scalar copy of a never-written parameter is dropped, one of a written one is kept', () => {
+  const unit = lines(
+    'void f(double color) {',
+    '  double v3 = color;',
+    '  double v4 = color;',
+    '  use(v3, v4);',
+    '}',
+    'void g(double color) {',
+    '  double v3 = color;',
+    '  color = 5;',
+    '  use(v3);',
+    '}',
+    'void h(gRef<GrA> a) {',
+    '  gRef<GrA> v3 = a;',
+    '  use(v3);',
+    '}'
+  )
+  const result = inlineScalarCopies(unit).split(String.fromCharCode(10))
+  assert.deepEqual(result.slice(0, 4), ['void f(double color) {', '  use(color, color);', '}', 'void g(double color) {'])
+  assert.ok(result.includes('  double v3 = color;'))
+  assert.ok(result.includes('  gRef<GrA> v3 = a;'))
+})
+
+test('a defaulted parameter is one conditional, and its diamond stays when a label is shared', () => {
+  const diamond = (extra) =>
+    lines(
+      'double f(gOptional<double> progress) {',
+      'double v0;',
+      'if (!(progress.has_value())) goto block2;',
+      'v0 = (*progress);',
+      'goto block3;',
+      'block2:',
+      'v0 = 0;',
+      'block3:',
+      extra,
+      'return v0;',
+      '}'
+    )
+  assert.equal(
+    foldDefaultedParameters(diamond('use(v0);')),
+    lines('double f(gOptional<double> progress) {', 'double progress_default;', 'progress_default = progress.has_value() ? (*progress) : 0;', 'use(progress_default);', 'return progress_default;', '}')
+  )
+  assert.equal(foldDefaultedParameters(diamond('goto block3;')), diamond('goto block3;'))
+})
+
+test('a block that is the rest of a function loses its braces, unless it redeclares a name', () => {
+  const unit = (inner) => lines('void f(double a) {', '  double b = a;', '  {', `    ${inner}`, '    use(c);', '  }', '}')
+  assert.equal(
+    unwrapFunctionBlock(unit('double c = b;')),
+    lines('void f(double a) {', '  double b = a;', '  double c = b;', '  use(c);', '}')
+  )
+  assert.equal(unwrapFunctionBlock(unit('double b = 2;')), unit('double b = 2;'))
+})
+
+test('a copy of a defaulted parameter reads the parameter instead', () => {
+  const unit = lines('void f(gOptional<double> p) {', '  double p_default = p.has_value() ? (*p) : 0;', '  double p_0 = p_default;', '  use(p_0);', '}')
+  assert.equal(inlineScalarCopies(unit), lines('void f(gOptional<double> p) {', '  double p_default = p.has_value() ? (*p) : 0;', '  use(p_default);', '}'))
+})
+
+test('a chain of scalar copies reads the first name', () => {
+  const unit = lines('void f(double p) {', '  double p_default = 1;', '  double a = p_default;', '  double v3 = a;', '  use(v3);', '}')
+  assert.equal(inlineScalarCopies(unit), lines('void f(double p) {', '  double p_default = 1;', '  use(p_default);', '}'))
+})
+
+test('parentheses around a number or a string literal go; a call keeps its own', () => {
+  assert.equal(unwrapRedundantParentheses('o->type = ("cylinder"); f(("a"), (0.2));'), 'o->type = "cylinder"; f("a", 0.2);')
+  assert.equal(unwrapRedundantParentheses('x = g("s");'), 'x = g("s");')
+})
+
+test('an optional field is assigned its value, and only when the same line marks that field present', () => {
+  assert.equal(
+    dropOptionalWrappers('m->r = (gOptional<double>{(0.4)}); m->gea_present_r = true;'),
+    'm->r = (0.4); m->gea_present_r = true;'
+  )
+  const elsewhere = 'v = (gOptional<double>{(0.4)});'
+  assert.equal(dropOptionalWrappers(elsewhere), elsewhere)
+  const otherField = 'm->r = (gOptional<double>{1}); m->gea_present_q = true;'
+  assert.equal(dropOptionalWrappers(otherField), otherField)
+})
+
+test('a string view of a literal with its true length is the sv literal', () => {
+  assert.equal(foldStringViews('f(std::string_view{"ball", 4}, std::string_view{"", 0}, std::string_view{"a\\n", 2});'), 'f("ball"sv, ""sv, "a\\n"sv);')
+  const wrong = 'std::string_view{"ball", 5}'
+  assert.equal(foldStringViews(wrong), wrong)
+  const unknown = 'std::string_view{"\\x41", 1}'
+  assert.equal(foldStringViews(unknown), unknown)
+})
+
+test('a store followed by its presence mark becomes one setter call, and the record gets the setter', () => {
+  const unit = lines(
+    'struct GrMat final {',
+    '  gOptional<double> emissive;',
+    '  bool gea_present_emissive = false;',
+    '};',
+    'void f() {',
+    '  m->emissive = 16726784; m->gea_present_emissive = true;',
+    '  m->emissive = (gOptional<double>{1}); n->gea_present_emissive = true;',
+    '}'
+  )
+  const result = foldFieldSetters(unit)
+  assert.match(result, /m->set_emissive\(16726784\);/)
+  assert.match(result, /template <typename V> void set_emissive\(V&& value\) \{ emissive = std::forward<V>\(value\); gea_present_emissive = true; \}/)
+  assert.match(result, /m->emissive = \(gOptional<double>\{1\}\); n->gea_present_emissive = true;/)
+})
+
+test('an empty optional passed to a compiled function is gEmpty; one that names its type elsewhere stays', () => {
+  assert.equal(
+    foldEmptyOptionalArguments('Gf_f(gOptional<gRef<gArray<double>>>(), 5, gOptional<double>());'),
+    'Gf_f(gEmpty, 5, gEmpty);'
+  )
+  const kept = 'auto x = gOptional<double>(); std::move(gOptional<double>()); Gf_f(gOptional<double>{1});'
+  assert.equal(foldEmptyOptionalArguments(kept), kept)
 })

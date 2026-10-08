@@ -9340,6 +9340,14 @@ struct Undefined {
 };
 
 /**
+ * The argument that says "no value" to any `Optional`, whatever its payload: `f(gEmpty, 5)` instead of
+ * `f(gea::Optional<gea::Ref<gea::ArrayObject<double>>>(), 5)`. A type of its own rather than `Undefined`: an
+ * `Optional<Value>` already builds a PRESENT `Value` from an `Undefined`, and that must stay.
+ */
+struct EmptyOptional {};
+inline constexpr EmptyOptional emptyOptional{};
+
+/**
  * `T | undefined`, never a `T` holding a sentinel: a presence flag plus a
  * default-constructible `T`.
  *
@@ -9372,6 +9380,7 @@ class Optional {
   }
 
   Optional() noexcept : state_(State::Empty) {}
+  Optional(EmptyOptional) noexcept : state_(State::Empty) {}
   Optional(const T& value) : state_(State::Present) { detail::constructCopy<T>(static_cast<void*>(&value_), value); }
   Optional(T&& value) : state_(State::Present) { new (static_cast<void*>(&value_)) T(std::move(value)); }
 
@@ -9547,6 +9556,10 @@ class Optional<Ref<Pointee>> {
   }
 
   Optional() noexcept {
+    new (static_cast<void*>(&value_)) Handle();
+    word() = absentWord();
+  }
+  Optional(EmptyOptional) noexcept {
     new (static_cast<void*>(&value_)) Handle();
     word() = absentWord();
   }

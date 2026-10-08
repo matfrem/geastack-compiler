@@ -63,6 +63,15 @@ In this order, after sections 1 and 2. The gate baselines (old item 6) are *not*
    file first; the backend is 67 of 77 s of a Bioustopia build, 35 s of it in the inliner.
 4. **Per-field `gea_present_x` / `gea_attributes_x`** (about 26% of the output's bytes): omit them for a field the
    program never deletes, redefines or freezes. The `fieldOperations` reflection demand already says which.
+   Measured: the declarations are only 2% of the bytes. What the user dislikes is the *store* noise,
+   `o->emissive = 16726784; o->gea_present_emissive = true;`, and asked for `o->emissive = 16726784;` to be enough.
+   Findings (2026-10-08): `cppRecordFieldPresenceName` is used at 120 sites in 27 files; records.ts also `memcpy`s runs
+   of contiguous presence bytes (`records.ts` ~3225); `Optional` already has a three-state byte (empty, constructed,
+   present) and `Optional<Ref<T>>` encodes absent as the address 1, so a fourth "present, undefined" state would have
+   to be added to every carrier that can be absent (Optional, OptionalRef, unions with an undefined arm), and each reader
+   of the bool (reflection, JSON, `in`, `delete`, `defineProperty`) moved to an accessor. Not a half-day change.
+   A text-only `--short-names` fold of the pair (`dropOptionalWrappers`, done) removes the `gOptional<T>{...}` wrapper
+   but not the presence store.
 5. **Names**: the ~535 still-anonymous bodies, the ~113 anonymous records, source-location comments above classes.
 6. **Game-side compiler gaps** seen in the working tree of `C:\Work\BioustopiaCpp` (`ojs/level/levelFile.ts`,
    `ojs/save/slots.ts`): `JSON.stringify(record, null, 1)` ("replacer support requires a string or genuinely dynamic

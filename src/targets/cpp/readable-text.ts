@@ -219,6 +219,13 @@ const parameterNameIsSafe = (name: string): boolean =>
 const eachIdentifier = (text: string, visit: (token: string, start: number, end: number) => void): void => {
   let index = 0
   while (index < text.length) {
+    // A string literal is text, not a name: `"deck"` must not make a parameter called `deck` look taken.
+    if (text[index] === '"') {
+      index += 1
+      while (index < text.length && text[index] !== '"') index += text[index] === '\\' ? 2 : 1
+      index += 1
+      continue
+    }
     if (!isIdentifierCharacter(text[index])) {
       index += 1
       continue
@@ -229,6 +236,20 @@ const eachIdentifier = (text: string, visit: (token: string, start: number, end:
     index = end
   }
 }
+
+/**
+ * The first line of a function definition: unindented, opening a body, with a parameter list. A `struct X final {`
+ * also opens a brace at the margin but closes with `};`, so taking it for a function would leave the "current
+ * function" open across the next real one.
+ */
+const isFunctionHeader = (line: string): boolean =>
+  line !== '' &&
+  line[0] !== ' ' &&
+  line[0] !== '}' &&
+  line[0] !== '#' &&
+  line.endsWith(' {') &&
+  line.includes('(') &&
+  !['struct ', 'class ', 'union ', 'enum ', 'namespace ', 'extern '].some((word) => line.startsWith(word))
 
 /** Whether an identifier at `start` is a member or a qualified name, which never meets a local of the same spelling. */
 const isMemberOrQualified = (text: string, start: number): boolean =>
@@ -390,11 +411,20 @@ export const unwrapRedundantParentheses = (text: string): string => {
       }
       if (character !== '(') continue
       let end = index + 1
-      while (end < input.length && isIdentifierCharacter(input[end])) end += 1
+      const quoted = input[end] === '"'
+      const startsWithDigit = input[end] !== undefined && (input[end] as string) >= '0' && (input[end] as string) <= '9'
+      if (quoted) {
+        // A string literal is a primary expression: nothing the parentheses could group.
+        end += 1
+        while (end < input.length && input[end] !== '"') end += input[end] === '\\' ? 2 : 1
+        end += 1
+      } else {
+        while (end < input.length && (isIdentifierCharacter(input[end]) || (startsWithDigit && input[end] === '.'))) end += 1
+      }
       if (end === index + 1 || input[end] !== ')') continue
       const atom = input.slice(index + 1, end)
       const first = atom[0] as string
-      const numeric = first >= '0' && first <= '9'
+      const numeric = (first >= '0' && first <= '9') || quoted
       // What comes before: an operator or a separator, never a name, a closing bracket or `>`.
       let before = index - 1
       while (before >= 0 && input[before] === ' ') before -= 1
@@ -496,7 +526,7 @@ export const mergeDeclarations = (text: string): string => {
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] as string
     if (functionStart < 0) {
-      if (line !== '' && line[0] !== ' ' && line[0] !== '}' && line[0] !== '#' && line.endsWith(' {')) functionStart = index
+      if (isFunctionHeader(line)) functionStart = index
       continue
     }
     if (line !== '}') continue
@@ -648,7 +678,7 @@ export const nameValues = (text: string): string => {
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] as string
     if (functionStart < 0) {
-      if (line !== '' && line[0] !== ' ' && line[0] !== '}' && line[0] !== '#' && line.endsWith(' {')) functionStart = index
+      if (isFunctionHeader(line)) functionStart = index
       continue
     }
     if (line !== '}') continue
@@ -688,6 +718,270 @@ export const nameValues = (text: string): string => {
   return renamedLines.size === 0 ? text : lines.map((line, index) => renamedLines.get(index) ?? line).join('\n')
 }
 
+/** The name a declaration statement (`T name = ...;`, `T name;`) introduces, or null for any other statement. */
+const declaredNameOf = (trimmed: string): string | null => {
+  if (!trimmed.endsWith(';') || trimmed.startsWith('{') || trimmed.startsWith('return ') || trimmed.startsWith('goto ')) return null
+  const equals = trimmed.indexOf(' = ')
+  const left = equals >= 0 ? trimmed.slice(0, equals) : trimmed.slice(0, -1)
+  const split = left.lastIndexOf(' ')
+  const name = left.slice(split + 1)
+  if (split < 0 || name === '' || ![...name].every(isIdentifierCharacter) || left.slice(0, split).includes('(')) return null
+  return name
+}
+
+/**
+ * A function whose whole body after a few statements is one `{ ... }` block: the block was the scope of everything
+ * the last label dominates, and nothing else shares it, so its braces and one level of indentation are noise. Only
+ * when no name declared directly in the block is already spelled before it.
+ */
+export const unwrapFunctionBlock = (text: string): string => {
+  const lines = text.split('\n')
+  const shapes = shapesOfLines(lines)
+  if (shapes === null) return text
+  const removed = new Set<number>()
+  const dedented = new Set<number>()
+  let start = -1
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] as string
+    if (start < 0) {
+      if (isFunctionHeader(line)) start = index
+      continue
+    }
+    if (line !== '}') continue
+    const header = start
+    start = -1
+    // The block is the last statement: its closing brace is the line before the function's.
+    if (lines[index - 1] !== '  }') continue
+    const close = index - 1
+    let open = -1
+    for (let at = close - 1; at > header && open < 0; at -= 1) {
+      if (lines[at] === '  {' && (shapes[at] as LineShape).level === (shapes[close] as LineShape).level) open = at
+    }
+    if (open < 0) continue
+    const before = new Set<string>()
+    for (let at = header; at < open; at += 1)
+      eachIdentifier(lines[at] as string, (token, from) => (isMemberOrQualified(lines[at] as string, from) ? undefined : before.add(token)))
+    let clash = false
+    for (let at = open + 1; at < close; at += 1) {
+      const entry = lines[at] as string
+      if (entry.startsWith('    ') && entry[4] !== ' ') {
+        const name = declaredNameOf(entry.trim())
+        if (name !== null && before.has(name)) clash = true
+      }
+    }
+    if (clash) continue
+    removed.add(open)
+    removed.add(close)
+    for (let at = open + 1; at < close; at += 1)
+      if (!(shapes[at] as LineShape).skipped && (lines[at] as string).startsWith('  ')) dedented.add(at)
+  }
+  if (removed.size === 0) return text
+  return lines.flatMap((line, index) => (removed.has(index) ? [] : [dedented.has(index) ? line.slice(2) : line])).join('\n')
+}
+
+const scalarTypes = ['double', 'bool', 'long long', 'int']
+
+/**
+ * A parameter with a default, which the printer lowers as a diamond of two gotos:
+ *
+ *     double v0;  if (!(p.has_value())) goto block2;  v0 = (*p);  goto block3;  block2:  v0 = 0;  block3:
+ *
+ * becomes `double pDefault = p.has_value() ? (*p) : 0;`. Only when the default is one assignment of a scalar or a
+ * string (a `?:` needs both arms to agree, and a handle's arms may not) and neither label is jumped to from anywhere
+ * else in the function.
+ */
+export const foldDefaultedParameters = (text: string): string => {
+  const lines = text.split('\n')
+  const typeOk = (type: string): boolean => scalarTypes.includes(type) || type === 'gString' || type === 'std::string'
+  const renames = new Map<number, { readonly from: number; readonly cell: string; readonly target: string }>()
+  const dropped = new Set<number>()
+  const replaced = new Map<number, string>()
+  let functionStart = -1
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] as string
+    if (isFunctionHeader(line)) functionStart = index
+    else if (line === '}') functionStart = -1
+    const test = line.trim()
+    const guard = test.startsWith('if (!(') && test.includes('.has_value())) goto ') ? test.slice('if (!('.length) : null
+    if (guard === null || functionStart < 0 || index + 5 >= lines.length) continue
+    const next = lines.slice(index + 1, index + 6).map((entry) => entry.trim())
+    const written = guard.slice(0, guard.indexOf('.has_value()'))
+    const parameter = written.startsWith('(') && written.endsWith(')') ? written.slice(1, -1) : written
+    const skip = guard.slice(guard.indexOf('goto ') + 5, -1)
+    const [assignRead, jump, label, assignDefault, join] = next as [string, string, string, string, string]
+    const cell = assignRead.slice(0, assignRead.indexOf(' = '))
+    const defined = (statement: string): string | null =>
+      statement.startsWith(`${cell} = `) && statement.endsWith(';') ? statement.slice(cell.length + 3, -1) : null
+    const taken = defined(assignRead)
+    const fallback = defined(assignDefault)
+    const joinLabel = jump.startsWith('goto ') && jump.endsWith(';') ? jump.slice(5, -1) : null
+    if (
+      parameter === '' ||
+      ![...parameter].every(isIdentifierCharacter) ||
+      cell === '' ||
+      !isDigits(cell.slice(1)) ||
+      taken === null ||
+      fallback === null ||
+      joinLabel === null ||
+      label !== `${skip}:` ||
+      join !== `${joinLabel}:` ||
+      !taken.includes(parameter)
+    )
+      continue
+    let end = index + 6
+    while (end < lines.length && lines[end] !== '}') end += 1
+    // The two labels are the whole diamond only if nothing else in the function names them, and the cell must be
+    // declared with a type a conditional can carry.
+    let jumpedElsewhere = false
+    let declaredType: string | null = null
+    let used = false
+    const name = `${parameter}_default`
+    for (let at = functionStart; at <= end; at += 1) {
+      if (at >= index && at < index + 6) continue
+      const entry = lines[at] as string
+      eachIdentifier(entry, (token) => {
+        if (token === skip || token === joinLabel) jumpedElsewhere = true
+        if (token === name) used = true
+      })
+      const trimmed = entry.trim()
+      if (at < index && trimmed.endsWith(` ${cell};`) && typeOk(trimmed.slice(0, -cell.length - 2)))
+        declaredType = trimmed.slice(0, -cell.length - 2)
+    }
+    if (jumpedElsewhere || declaredType === null) continue
+    const indent = line.slice(0, line.length - line.trimStart().length)
+    const target = used || !parameterNameIsSafe(name) ? cell : name
+    replaced.set(index, `${indent}${cell} = ${parameter}.has_value() ? ${taken} : ${fallback};`)
+    for (let at = index + 1; at < index + 6; at += 1) dropped.add(at)
+    if (target !== cell) renames.set(index, { from: functionStart, cell, target })
+    index += 5
+  }
+  for (const [at, { from, cell, target }] of renames) {
+    let end = at
+    while (end < lines.length && lines[end] !== '}') end += 1
+    for (let row = from; row <= end; row += 1) {
+      const entry = replaced.get(row) ?? (lines[row] as string)
+      let out = ''
+      let copied = 0
+      eachIdentifier(entry, (token, start, tokenEnd) => {
+        if (token !== cell || isMemberOrQualified(entry, start)) return
+        out += entry.slice(copied, start) + target
+        copied = tokenEnd
+      })
+      if (copied !== 0) replaced.set(row, out + entry.slice(copied))
+    }
+  }
+  if (replaced.size === 0) return text
+  return lines.flatMap((line, index) => (dropped.has(index) ? [] : [replaced.get(index) ?? line])).join('\n')
+}
+
+/** The text after a name that reaches the assignment of that name: `= `, `+= `, `++`, `--`; `==` and `=>` are reads. */
+const writesAfter = (text: string, end: number): boolean => {
+  let at = end
+  while (text[at] === ' ') at += 1
+  const next = text[at]
+  const after = text[at + 1]
+  if (next === '=') return after !== '=' && after !== '>'
+  if ('+-*/%&|^'.includes(next ?? '#') && after === '=') return true
+  return (
+    (next === '+' && after === '+') ||
+    (next === '-' && after === '-') ||
+    (next === '<' && after === '<' && text[at + 2] === '=') ||
+    (next === '>' && after === '>' && text[at + 2] === '=')
+  )
+}
+
+/**
+ * `double v3 = color;` where `color` is a scalar of the same type that nothing in the function ever writes or takes
+ * the address of, and `v3` is itself never written: the copy is the name, so the statement goes and `v3` reads
+ * `color`. The shorthand `{color, emissive: color}` made one copy per read of the property, which the C++ compiler
+ * folds away and a reader cannot.
+ *
+ * Scalars only. A copied `Ref` is a retained handle, and dropping it would change when the object dies.
+ */
+export const inlineScalarCopies = (text: string): string => {
+  const lines = text.split('\n')
+  let functionStart = -1
+  const dropped = new Set<number>()
+  const replaced = new Map<number, string>()
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] as string
+    if (functionStart < 0) {
+      if (isFunctionHeader(line)) functionStart = index
+      continue
+    }
+    if (line !== '}') continue
+    const first = functionStart
+    functionStart = -1
+    const range = lines.slice(first, index + 1)
+    const copies: Array<{ readonly at: number; readonly type: string; readonly cell: string; readonly source: string }> = []
+    range.forEach((entry, offset) => {
+      const trimmed = entry.trim()
+      const type = scalarTypes.find((candidate) => trimmed.startsWith(`${candidate} `))
+      if (type === undefined || !trimmed.endsWith(';')) return
+      const equals = trimmed.indexOf(' = ')
+      const cell = trimmed.slice(type.length + 1, equals)
+      const source = trimmed.slice(equals + 3, -1)
+      if (
+        equals < 0 ||
+        (!(cell[0] === 'v' && isDigits(cell.slice(1))) && !source.endsWith('_default')) ||
+        source === '' ||
+        ![...source].every(isIdentifierCharacter)
+      )
+        return
+      if (isDigits(source[0] as string) || source === cell) return
+      copies.push({ at: offset, type, cell, source })
+    })
+    if (copies.length === 0) continue
+    const declarations = new Map<string, number>()
+    const spoiled = new Set<string>()
+    for (const entry of range) {
+      eachIdentifier(entry, (token, start, end) => {
+        if (isMemberOrQualified(entry, start)) return
+        const before = entry.slice(0, start)
+        if (before.endsWith('&') || before.endsWith('++') || before.endsWith('--') || writesAfter(entry, end)) {
+          // `T& x`, `&x`, `++x`, `x = ...`: the declaration itself ends in `= ` when it has an initialiser, so only a
+          // statement that is not a declaration of the name counts as a write.
+          const declares = scalarTypes.some((type) => before.endsWith(`${type} `))
+          if (!declares) spoiled.add(token)
+        }
+        if (scalarTypes.some((type) => before.endsWith(`${type} `))) declarations.set(token, (declarations.get(token) ?? 0) + 1)
+      })
+    }
+    const chosen = new Map<string, string>()
+    for (const copy of copies) {
+      if (spoiled.has(copy.cell) || spoiled.has(copy.source) || declarations.get(copy.cell) !== 1 || declarations.get(copy.source) !== 1)
+        continue
+      const declaredAs = range.some(
+        (entry) => entry.includes(`${copy.type} ${copy.source}`) && !entry.includes(`${copy.type} ${copy.source}_`)
+      )
+      if (!declaredAs) continue
+      chosen.set(copy.cell, copy.source)
+      dropped.add(first + copy.at)
+    }
+    if (chosen.size === 0) continue
+    // A copy of a copy: `v16 = radius_0` and `radius_0 = radius_default` both go, so `v16` must read the last name.
+    for (const [cell, source] of chosen) {
+      let last = source
+      for (let hops = 0; chosen.has(last) && hops < chosen.size; hops += 1) last = chosen.get(last) as string
+      chosen.set(cell, last)
+    }
+    range.forEach((entry, offset) => {
+      if (dropped.has(first + offset)) return
+      let result = ''
+      let copied = 0
+      eachIdentifier(entry, (token, start, end) => {
+        const replacement = chosen.get(token)
+        if (replacement === undefined || isMemberOrQualified(entry, start)) return
+        result += entry.slice(copied, start) + replacement
+        copied = end
+      })
+      if (copied !== 0) replaced.set(first + offset, result + entry.slice(copied))
+    })
+  }
+  if (dropped.size === 0) return text
+  return lines.flatMap((line, index) => (dropped.has(index) ? [] : [replaced.get(index) ?? line])).join('\n')
+}
+
 /** `if (!(!done)) break;` as `if (done) break;`: a condition that negates a name twice says the name. */
 export const simplifyConditions = (text: string): string => {
   const needle = 'if (!(!'
@@ -704,13 +998,282 @@ export const simplifyConditions = (text: string): string => {
   return from === 0 ? text : result + text.slice(from)
 }
 
+const optionalPayloads = new Set(['double', 'bool', 'long long', 'int', 'gString', 'std::string'])
+
+/** The index of the `}` that closes the `{` at `open`, or -1; strings and nested brackets are skipped, a top-level comma refuses. */
+const closingBraceOf = (line: string, open: number): number => {
+  let depth = 0
+  for (let index = open; index < line.length; index += 1) {
+    const character = line[index] as string
+    if (character === '"') {
+      index += 1
+      while (index < line.length && line[index] !== '"') index += line[index] === '\\' ? 2 : 1
+    } else if ('([{'.includes(character)) depth += 1
+    else if (')]}'.includes(character)) {
+      depth -= 1
+      if (depth === 0) return character === '}' ? index : -1
+    } else if (character === ',' && depth === 1) return -1
+  }
+  return -1
+}
+
+/**
+ * `o->f = (gOptional<double>{0.4}); o->gea_present_f = true;` as `o->f = 0.4; o->gea_present_f = true;`.
+ *
+ * The runtime's `Optional` assigns from a value, so the braces only repeat the field's own type. Taken only when
+ * the same line then marks THAT field present, which is how the printer writes a store into an optional field and
+ * proves the left side is one: a union or a `Value` assigned from a `gOptional<double>` would convert differently.
+ */
+export const dropOptionalWrappers = (text: string): string =>
+  text
+    .split('\n')
+    .map((original) => {
+      let line = original
+      for (let from = 0; ;) {
+        const equals = line.indexOf(' = ', from)
+        if (equals < 0) break
+        from = equals + 3
+        const wrapped = line[from] === '('
+        const start = wrapped ? from + 1 : from
+        if (!line.startsWith('gOptional<', start)) continue
+        const brace = line.indexOf('>{', start)
+        if (brace < 0 || !optionalPayloads.has(line.slice(start + 'gOptional<'.length, brace))) continue
+        const close = closingBraceOf(line, brace + 1)
+        if (close < 0 || (wrapped && line[close + 1] !== ')')) continue
+        const tail = wrapped ? close + 2 : close + 1
+        if (line[tail] !== ';') continue
+        const lhsStart = Math.max(line.lastIndexOf(' ', equals - 1), line.lastIndexOf(';', equals - 1)) + 1
+        const lhs = line.slice(lhsStart, equals)
+        const arrow = lhs.lastIndexOf('->')
+        if (arrow <= 0) continue
+        const member = lhs.slice(arrow + 2)
+        if (member === '' || ![...member].every(isIdentifierCharacter)) continue
+        if (!line.slice(tail + 1).includes(`${lhs.slice(0, arrow)}->gea_present_${member} = true;`)) continue
+        line = `${line.slice(0, from)}${line.slice(brace + 2, close)}${line.slice(tail)}`
+      }
+      return line
+    })
+    .join('\n')
+
+/**
+ * `std::string_view{"ball", 4}` as `"ball"sv`: the same view, with the length the compiler already counted. Taken only
+ * when the length written is the one the literal really has, so a spelling this scan does not follow (`\x41`, `é`)
+ * keeps its explicit form.
+ */
+export const foldStringViews = (text: string): string => {
+  const needle = 'std::string_view{"'
+  let result = ''
+  let copied = 0
+  for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length)) {
+    if (at < copied) continue
+    let index = at + needle.length
+    let length = 0
+    let understood = true
+    while (index < text.length && text[index] !== '"') {
+      if (text[index] === '\\') {
+        const escaped = text[index + 1]
+        if (escaped === undefined || !'ntr"\\\'abfv'.includes(escaped)) {
+          understood = false
+          break
+        }
+        length += 1
+        index += 2
+        continue
+      }
+      const point = text.codePointAt(index) as number
+      length += Buffer.byteLength(String.fromCodePoint(point))
+      index += point > 0xffff ? 2 : 1
+    }
+    if (!understood || text[index] !== '"') continue
+    const close = index + 1
+    let end = close + 2
+    if (text.slice(close, end) !== ', ') continue
+    while (end < text.length && text[end] !== undefined && (text[end] as string) >= '0' && (text[end] as string) <= '9') end += 1
+    if (text[end] !== '}' || end === close + 2 || Number(text.slice(close + 2, end)) !== length) continue
+    result += `${text.slice(copied, at)}${text.slice(at + 'std::string_view{'.length, close)}sv`
+    copied = end + 1
+  }
+  return copied === 0 ? text : result + text.slice(copied)
+}
+
+/** The index of the `;` that ends the statement starting at `from`, outside strings and brackets; -1 when there is none. */
+const statementEnd = (line: string, from: number): number => {
+  let depth = 0
+  for (let index = from; index < line.length; index += 1) {
+    const character = line[index] as string
+    if (character === '"' || character === "'") {
+      index += 1
+      while (index < line.length && line[index] !== character) index += line[index] === '\\' ? 2 : 1
+    } else if ('([{'.includes(character)) depth += 1
+    else if (')]}'.includes(character)) depth -= 1
+    else if (character === ';' && depth === 0) return index
+  }
+  return -1
+}
+
+const hasTopLevelComma = (text: string): boolean => {
+  let depth = 0
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index] as string
+    if (character === '"' || character === "'") {
+      index += 1
+      while (index < text.length && text[index] !== character) index += text[index] === '\\' ? 2 : 1
+    } else if ('([{<'.includes(character)) depth += 1
+    else if (')]}>'.includes(character)) depth -= 1
+    else if (character === ',' && depth <= 0) return true
+  }
+  return false
+}
+
+/**
+ * `o->emissive = 16726784; o->gea_present_emissive = true;` as `o->set_emissive(16726784);`, and the setter itself in
+ * every record that declares the presence bit: `template <typename V> void set_emissive(V&& v)` stores the value and
+ * marks the property present, which is what a store to a property means. The caller says what it stores; the
+ * bookkeeping of the reflection protocol stays in the record.
+ *
+ * Taken only when the second statement sets THAT object's presence for THAT field, immediately after the store. A
+ * record that already has a member of the setter's name keeps the two statements.
+ */
+export const foldFieldSetters = (text: string): string => {
+  const used = new Set<string>()
+  const lines = text.split('\n').map((original) => {
+    let line = original
+    for (let from = 0; ;) {
+      const equals = line.indexOf(' = ', from)
+      if (equals < 0) break
+      from = equals + 3
+      const lhsStart = Math.max(line.lastIndexOf(' ', equals - 1), line.lastIndexOf(';', equals - 1)) + 1
+      const lhs = line.slice(lhsStart, equals)
+      const arrow = lhs.indexOf('->')
+      if (arrow <= 0 || lhs.indexOf('->', arrow + 2) >= 0 || line[lhsStart - 1] === '&') continue
+      const object = lhs.slice(0, arrow)
+      const member = lhs.slice(arrow + 2)
+      if (![...object].every(isIdentifierCharacter) || member === '' || ![...member].every(isIdentifierCharacter)) continue
+      if (member.startsWith('gea_')) continue
+      const end = statementEnd(line, from)
+      if (end < 0 || !line.startsWith(` ${object}->gea_present_${member} = true;`, end + 1)) continue
+      const expression = line.slice(from, end)
+      if (expression === '') continue
+      const inner = unwrapParentheses(expression)
+      const value = inner !== expression && !hasTopLevelComma(inner) ? inner : expression
+      const consumed = ` ${object}->gea_present_${member} = true;`.length
+      const replacement = `${object}->set_${member}(${value});`
+      line = `${line.slice(0, lhsStart)}${replacement}${line.slice(end + 1 + consumed)}`
+      used.add(member)
+      from = lhsStart + replacement.length
+    }
+    return line
+  })
+  if (used.size === 0) return text
+  const ranges = new Map<number, readonly [number, number]>()
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] as string
+    if (!line.startsWith('struct ') || !line.endsWith(' {')) continue
+    let end = index
+    while (end < lines.length && lines[end] !== '};') end += 1
+    for (let at = index; at <= end; at += 1) ranges.set(at, [index, end])
+    index = end
+  }
+  const mentions = (from: number, to: number, name: string): boolean => {
+    for (let at = from; at < to; at += 1) {
+      let found = false
+      eachIdentifier(lines[at] as string, (token) => (found ||= token === name))
+      if (found) return true
+    }
+    return false
+  }
+  const result: string[] = []
+  const prefix = 'bool gea_present_'
+  lines.forEach((line, index) => {
+    result.push(line)
+    const range = ranges.get(index)
+    const trimmed = line.trim()
+    if (range === undefined || !trimmed.startsWith(prefix) || !trimmed.endsWith(' = false;')) return
+    const member = trimmed.slice(prefix.length, -' = false;'.length)
+    if (!used.has(member) || mentions(range[0], range[1], `set_${member}`)) return
+    const indent = line.slice(0, line.length - line.trimStart().length)
+    result.push(
+      `${indent}template <typename V> void set_${member}(V&& value) { ${member} = std::forward<V>(value); gea_present_${member} = true; }`
+    )
+  })
+  return result.join('\n')
+}
+
+/**
+ * `Gf_box(gOptional<double>(), v)` as `Gf_box(gEmpty, v)`: an argument that is an empty optional of the parameter's own
+ * type says the same thing as `gEmpty`, which converts to any `Optional`. Only inside a call of a compiled function
+ * (`Gf_...`) or a construct helper, whose parameters are those optionals; elsewhere (`auto x = gOptional<double>()`)
+ * the type is the point and stays.
+ */
+export const foldEmptyOptionalArguments = (text: string): string => {
+  const needle = 'gOptional<'
+  const callees: string[] = []
+  let result = ''
+  let copied = 0
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index] as string
+    if (character === '"' || character === "'") {
+      if (character === "'" && index > 0 && isIdentifierCharacter(text[index - 1])) continue
+      index += 1
+      while (index < text.length && text[index] !== character) index += text[index] === '\\' ? 2 : 1
+      continue
+    }
+    if (character === '(') {
+      let start = index
+      while (start > 0 && (isIdentifierCharacter(text[start - 1]) || text[start - 1] === ':')) start -= 1
+      callees.push(text.slice(start, index))
+      continue
+    }
+    if (character === ')') {
+      callees.pop()
+      continue
+    }
+    if (!text.startsWith(needle, index) || isIdentifierCharacter(text[index - 1]) || text[index - 1] === ':') continue
+    const callee = callees[callees.length - 1] ?? ''
+    if (!callee.startsWith('Gf_') && !callee.startsWith('gea_construct')) continue
+    let before = index - 1
+    while (before >= 0 && text[before] === ' ') before -= 1
+    if (text[before] !== '(' && text[before] !== ',') continue
+    let depth = 0
+    let end = index + needle.length - 1
+    for (; end < text.length; end += 1) {
+      if (text[end] === '<') depth += 1
+      else if (text[end] === '>') {
+        depth -= 1
+        if (depth === 0) break
+      }
+    }
+    if (text.slice(end + 1, end + 3) !== '()' || (text[end + 3] !== ',' && text[end + 3] !== ')')) continue
+    result += `${text.slice(copied, index)}gEmpty`
+    copied = end + 3
+    index = end + 2
+  }
+  return copied === 0 ? text : result + text.slice(copied)
+}
+
 /** Every text-level respelling of a unit, in the order that lets each one see what the one before it made. */
 export const makeReadable = (text: string): string =>
   nameValues(
-    foldRangeVariables(
-      reconstructLoops(
-        mergeDeclarations(
-          indentBlocks(simplifyConditions(unwrapRedundantParentheses(dropDefaultedAttributes(foldThrowHelpers(foldDoubleCasts(text))))))
+    inlineScalarCopies(
+      foldRangeVariables(
+        reconstructLoops(
+          mergeDeclarations(
+            unwrapFunctionBlock(
+              foldDefaultedParameters(
+                indentBlocks(
+                  simplifyConditions(
+                    foldFieldSetters(
+                      unwrapRedundantParentheses(
+                        dropOptionalWrappers(
+                          dropDefaultedAttributes(foldThrowHelpers(foldStringViews(foldDoubleCasts(foldEmptyOptionalArguments(text)))))
+                        )
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          )
         )
       )
     )
@@ -773,7 +1336,7 @@ export const reconstructLoops = (text: string): string => {
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] as string
     if (start < 0) {
-      if (line !== '' && line[0] !== ' ' && line[0] !== '}' && line[0] !== '#' && line.endsWith(' {')) start = index
+      if (isFunctionHeader(line)) start = index
       else out.push(line)
       continue
     }
