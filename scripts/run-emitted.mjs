@@ -96,6 +96,7 @@ const compileArguments = ['compile', resolve(entry), '--out-dir', out]
 // either mode.
 if (!argv.includes('--dynamic-fallback')) compileArguments.push('--closed-script-scope')
 if (argv.includes('--dynamic-fallback')) compileArguments.push('--dynamic-fallback')
+if (argv.includes('--short-names')) compileArguments.push('--short-names')
 if (project) compileArguments.push('--project', resolve(project))
 if (layout) compileArguments.push('--translation-units', layout)
 try {

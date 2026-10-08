@@ -106,16 +106,6 @@ export const structuredLoopsOf = (
   return { plan: { entry: plan.entry, order, parent, children, depth }, loops }
 }
 
-/** The smallest loop that contains a block, or null. */
-export const innermostLoopOf = (loops: ReadonlyMap<IrBlockId, LoopShape>, block: IrBlockId): LoopShape | null => {
-  let found: LoopShape | null = null
-  for (const loop of loops.values()) {
-    if (!loop.members.has(block)) continue
-    if (found === null || loop.members.size < found.members.size) found = loop
-  }
-  return found
-}
-
 const startsLoopOrSwitch = (line: string): boolean =>
   line.includes('for (') ||
   line.includes('while (') ||

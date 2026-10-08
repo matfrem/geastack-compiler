@@ -87,7 +87,7 @@ import { directCallReceiversOf, virtualCalleesOf } from './direct-call-receivers
 import { unionMemberTypeofReadsOf, unionMethodReadsOf } from './emit-union-properties.js'
 import { reactiveOriginsOf } from './reactive-origins.js'
 import { renderTryRegion, type RegionRendering } from './emit-exceptions.js'
-import { innermostLoopOf, structuredJumpsIn, structuredLoopsOf, type LoopShape } from './emit-loops.js'
+import { structuredJumpsIn, structuredLoopsOf, type LoopShape } from './emit-loops.js'
 import { declarationScopesOf, gotoTargetsOf, identifiersOf, scopePlanOf, type ScopePlan } from './emit-scopes.js'
 import { emitReturn } from './emit-return.js'
 import {
@@ -2386,7 +2386,10 @@ const nestedBlocksOf = (
   const texts = new Map<IrBlockId, string>()
   for (const id of plan.order) {
     let original = (rendered.get(id) as { readonly artifact: CppArtifact }).artifact.text
-    const loop = innermostLoopOf(loops, id)
+    // The loop whose braces this block is written inside, member or not: a block that cannot reach the loop's back
+    // edge (the code after a source `break`) is still nested in the body by dominance, not moved out with the exits.
+    let loop: LoopShape | null = null
+    for (let at: IrBlockId | undefined = id; at !== undefined && loop === null; at = effective.parent.get(at)) loop = loops.get(at) ?? null
     // A block that leaves its loop by falling into the block written next spells no jump (the layout elides it), but
     // the end of a `for (;;)` body is the top of the loop. The edge is written out, and `break` takes it from there.
     if (loop !== null) {

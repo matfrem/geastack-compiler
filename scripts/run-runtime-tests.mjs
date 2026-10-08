@@ -21,6 +21,7 @@
  *   //! emitted-once: <substring the emitted C++ must contain exactly once>
  *   //! compile-only                                     (check the C++, do not link it)
  *   //! dynamic-fallback                                 (compile with --dynamic-fallback)
+ *   //! short-names                                      (compile with --short-names: structured loops and the text passes)
  *
  * `compile-only` is for a program this runner cannot link -- a JSX program
  * needs the engine's node type and a real document. Its shape is still pinned
@@ -237,6 +238,7 @@ for (const file of files) {
   // documented escape hatch for (see `targets/cpp/emit.ts`'s mixed-binary
   // dispatch) -- not for working around a defect this suite should catch.
   const dynamicFallback = hasFlag(source, 'dynamic-fallback')
+  const shortNames = hasFlag(source, 'short-names')
   const shape = [
     ...directives(source, 'emitted-has').flatMap((text) => ['--emitted-has', text]),
     ...directives(source, 'emitted-lacks').flatMap((text) => ['--emitted-lacks', text]),
@@ -251,6 +253,7 @@ for (const file of files) {
       ...(layout ? ['--translation-units', layout] : []),
       ...(compileOnly ? ['--compile-only'] : []),
       ...(dynamicFallback ? ['--dynamic-fallback'] : []),
+      ...(shortNames ? ['--short-names'] : []),
       ...['--no-native-cache', '--no-pch', '--timings'].filter((option) => argv.includes(option))
     ]
     const result = spawnSync(
