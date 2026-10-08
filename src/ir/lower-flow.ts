@@ -327,7 +327,14 @@ export const createFlowController = (deps: FlowControllerDeps): FlowController =
     // An arm nothing ever runs in would otherwise seal with no terminator: it
     // is dead as far as this owner's operations go, so it heads straight to
     // whichever join the live arm eventually creates.
-    if (!arms.hasTruthy) sendArmToJoin(guard, info, armTrue, 'truthy')
+    // The truthy arm of a loop's own test is the body, and an empty body still loops: it goes back to the header
+    // (`while (step()) {}`), where sending it to the join would have run the test once and left.
+    const loop = membership.loopOfGuard(guard)
+    const header = loop === null ? undefined : loopCache.get(loop)?.header
+    if (!arms.hasTruthy) {
+      if (header !== undefined) builder.jump(armTrue, guard, header)
+      else sendArmToJoin(guard, info, armTrue, 'truthy')
+    }
     if (!arms.hasFalsy) sendArmToJoin(guard, info, armFalse, 'falsy')
     return info
   }
@@ -590,7 +597,13 @@ export const createFlowController = (deps: FlowControllerDeps): FlowController =
       // when it failed, and its taken arm writes the back edge as that arm
       // closes -- so leaving such a loop is nothing more than closing this
       // frame.
-      if (membership.guardOfLoop(frame.loop) !== null) return
+      const test = membership.guardOfLoop(frame.loop)
+      if (test !== null) {
+        // ...unless nothing was ever placed inside the loop, so neither arm of the test was entered and the
+        // branch itself was never written: `while (step()) {}` is a test and nothing else.
+        if (!guardCache.has(test) && !isTerminated()) leaveInto(ensureGuardBlocks(test).joinBlock)
+        return
+      }
       // A loop with no test has neither. Without the back edge below, the body
       // of `while (true)` ran exactly once and fell through to whatever came
       // after it -- an ordinary construct compiled into something that is not
