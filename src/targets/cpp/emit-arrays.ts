@@ -267,13 +267,20 @@ export const emitAllocateArrayObject = (ctx: EmitContext, lines: string[], opera
   // wrapper is intentionally skipped by the braced pack fast path above too:
   // `arrayOf<E>` returns the base `Ref<ArrayObject<E>>`, while the source
   // value's identity is `Ref<wrapper>`.
+  const table = constantTableOf(ctx, operation, representation.element, element, name)
+  // Every element is an ordinary value already in hand, so the object is built where it is written in one
+  // expression, with exactly its capacity, instead of an empty allocation that grows through one `push` per element.
+  if (table === null && !representation.recursive && ordinary.length === operation.elements.length && ordinary.length > 0) {
+    const elements = ordinary.map((value) => packElementText(ctx, representation.element, element, value))
+    lines.push(`${name} = gea::arrayOf<${element}>({${elements.join(', ')}});`)
+    return
+  }
   lines.push(`${name} = gea::makeRef<${cppTypeOf(representation, 'owned')}>();`)
   // The capacity this array's fill loop already states -- see
   // `collectCapacityHints`. It renders here, at the allocation, because that
   // is the one point every path to the loop passes through.
   const capacity = ctx.capacityHints.get(operation.result.id)
   if (capacity !== undefined) lines.push(`gea::reserveHint(${name}, ${capacityText(ctx, capacity)});`)
-  const table = constantTableOf(ctx, operation, representation.element, element, name)
   if (table !== null) {
     lines.push(`static const ${element} ${table.name}[] = {`)
     for (const row of table.rows) lines.push(`  ${row}`)
