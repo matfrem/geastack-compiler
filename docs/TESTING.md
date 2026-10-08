@@ -25,3 +25,11 @@ integration. The upstream Test262 dataset is a separate conformance sweep.
 
 The emitted-set comparison remains a separate check (`npm run gate`). Pebble's
 SDK-dependent size check is documented in [PEBBLE-SIZE.md](PEBBLE-SIZE.md).
+
+## Speed against Node
+
+`node scripts/bench-vs-node.mjs` compiles the programs of `test/bench/` with this compiler, builds them with clang `-O2`
+and times each beside Node running the same TypeScript file. The programs cover numeric loops, typed-array integers and
+`Float32Array` stencils, small-object allocation, collections and closures. Each prints its own elapsed time and a
+checksum, so the output says both that the two runs agree and how long each took. It is a measurement, not a test: it
+needs clang on the path, and a figure is a tendency on one machine (`BENCH_OPT`, `BENCH_SAMPLES`).

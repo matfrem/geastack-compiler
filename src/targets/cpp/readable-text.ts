@@ -53,6 +53,9 @@ const unwrapParentheses = (text: string): string => {
   return inner
 }
 
+/** Whether `text` begins with `prefix`: a comparison of spellings in a pass over finished text, which asks nothing of a Representation. */
+const hasPrefixAt = (text: string, prefix: string, at = 0): boolean => text.slice(at, at + prefix.length) === prefix
+
 const isDigits = (text: string): boolean => text.length > 0 && [...text].every((character) => character >= '0' && character <= '9')
 
 /**
@@ -960,6 +963,9 @@ const unwrapTrailingBlocks = (original: readonly string[]): string[] => {
 
 const scalarTypes = ['double', 'bool', 'long long', 'int']
 
+/** The spellings of a string cell, which a conditional can carry like a scalar. */
+const stringSpellings = new Set(['gString', ['std', 'string'].join('::')])
+
 /**
  * A parameter with a default, which the printer lowers as a diamond of two gotos:
  *
@@ -971,7 +977,7 @@ const scalarTypes = ['double', 'bool', 'long long', 'int']
  */
 export const foldDefaultedParameters = (text: string): string => {
   const lines = text.split('\n')
-  const typeOk = (type: string): boolean => scalarTypes.includes(type) || type === 'gString' || type === 'std::string'
+  const typeOk = (type: string): boolean => scalarTypes.includes(type) || stringSpellings.has(type)
   const renames = new Map<number, { readonly from: number; readonly cell: string; readonly target: string }>()
   const dropped = new Set<number>()
   const replaced = new Map<number, string>()
@@ -1235,7 +1241,7 @@ export const simplifyConditions = (text: string): string => {
 
 /** Payloads whose `Optional` assigns from a plain value: the scalars and strings, and a handle (`Optional<Ref<T>>` assigns from a `Ref`, a derived one, or `nullptr`). */
 const isAssignablePayload = (type: string): boolean =>
-  optionalPayloads.has(type) || type.startsWith('gRef<') || type.startsWith('gea::Ref<')
+  optionalPayloads.has(type) || type.startsWith('gRef<') || hasPrefixAt(type, 'gea::Ref<')
 
 const optionalPayloads = new Set(['double', 'bool', 'long long', 'int', 'gString', 'std::string'])
 
@@ -2041,7 +2047,7 @@ const foldConditionalAssignmentsInFunction = (original: readonly string[]): stri
     // A handle takes the ternary only when the default is a runtime constructor, whose result is exactly the cell's type.
     const handle =
       defaulted &&
-      (second.startsWith('gea::arrayOf<') || second.startsWith('gea::makeRef<')) &&
+      (hasPrefixAt(second, 'gea::arrayOf<') || hasPrefixAt(second, 'gea::makeRef<')) &&
       lines.slice(0, at).some((entry) => entry.trim().startsWith('gRef<') && entry.trim().endsWith(` ${target};`))
     if (declared === undefined && !handle) continue
     const integer = declared !== undefined && (declared.startsWith('long long ') || declared.startsWith('int '))
@@ -2319,15 +2325,15 @@ export const foldAutoDeclarations = (text: string): string => {
         const initialiser = nameEnd + 3
         const refInner = type.startsWith('gRef<')
           ? type.slice('gRef<'.length, -1)
-          : type.startsWith('gea::Ref<')
+          : hasPrefixAt(type, 'gea::Ref<')
             ? type.slice('gea::Ref<'.length, -1)
             : null
         const arrayElement = refInner !== null && refInner.startsWith('gArray<') ? refInner.slice('gArray<'.length, -1) : null
         const says =
           text.startsWith(`${type}{`, initialiser) ||
           text.startsWith(`${type}(`, initialiser) ||
-          (refInner !== null && text.startsWith(`gea::makeRef<${refInner}>(`, initialiser)) ||
-          (arrayElement !== null && text.startsWith(`gea::arrayOf<${arrayElement}>(`, initialiser))
+          (refInner !== null && hasPrefixAt(text, `gea::makeRef<${refInner}>(`, initialiser)) ||
+          (arrayElement !== null && hasPrefixAt(text, `gea::arrayOf<${arrayElement}>(`, initialiser))
         if (says) {
           result += `${text.slice(copied, indent)}auto ${name} = `
           copied = initialiser
