@@ -11512,43 +11512,94 @@ inline constexpr std::size_t keyedIndexThreshold = 16;
 inline constexpr std::size_t keyedAbsent = static_cast<std::size_t>(-1);
 
 /**
- * Hash to insertion serial, for the keyed collections' lookups.
+ * Hash to position, for the keyed collections' lookups: a flat open-addressing table of `{hash, position + 1}` with
+ * linear probing, kept at most half full.
  *
- * A serial rather than a position because a deletion shifts every later position and moves no serial;
- * the position of a serial is a binary search over the (strictly increasing) serial list the collection
- * already keeps for its iterators. Insertion order stays where the specification requires it, in the
- * vector; this only answers "where is the key" without walking the vector.
+ * Insertion order stays where the specification requires it, in the collection's vector; this only answers "where is
+ * the key" without walking it. A position moves only when `compactKeyed` drops dead slots, and the collection rebuilds
+ * the table then (an O(n) pass beside the O(n) compaction), so a lookup is one probe sequence and one key comparison,
+ * with no search through the serial list. A removal marks its slot dead and leaves the table entry, which a lookup
+ * skips; the entry goes at the next rebuild.
  */
 struct KeyedIndex {
-  std::unordered_multimap<std::size_t, std::uint64_t> byHash;
+  struct Slot {
+    std::uint32_t hash = 0;
+    std::uint32_t position1 = 0;  // position + 1; zero is an empty slot
+  };
+  std::vector<Slot> slots;
+  std::size_t used = 0;
   bool built = false;
   /**
    * A removal from an indexed collection leaves its slot behind, marked here, instead of shifting every later
    * entry down: it is the only way a removal can stay O(1). Empty until the first removal, and then parallel to
    * the collection's storage. The serial of a dead slot stays in place, so the serial list keeps the order the
-   * binary searches rely on; the slot holds only moved-from values and is dropped by `compactKeyed`.
+   * iterator cursors rely on; the slot holds only moved-from values and is dropped by `compactKeyed`.
    */
   std::vector<char> dead;
   std::size_t deadCount = 0;
   bool isDead(std::size_t position) const { return !dead.empty() && dead[position] != 0; }
   void clear() {
-    byHash.clear();
+    slots.clear();
+    used = 0;
     built = false;
     dead.clear();
     deadCount = 0;
   }
-  void erase(std::size_t hash, std::uint64_t serial) {
-    const auto range = byHash.equal_range(hash);
-    for (auto it = range.first; it != range.second; ++it) {
-      if (it->second == serial) {
-        byHash.erase(it);
-        return;
-      }
+  /** A 32-bit mix of a hash: the table's mask takes its low bits, so they must depend on all of it. */
+  static std::uint32_t mix(std::size_t hash) {
+    return static_cast<std::uint32_t>((static_cast<std::uint64_t>(hash) * 0x9E3779B97F4A7C15ull) >> 32);
+  }
+  /** The position of the live entry `equal` accepts among those whose hash is `hash`, or `keyedAbsent`. */
+  template <typename Equal>
+  std::size_t find(std::size_t hash, Equal&& equal) const {
+    if (slots.empty()) return keyedAbsent;
+    const std::uint32_t wanted = mix(hash);
+    const std::size_t mask = slots.size() - 1;
+    for (std::size_t at = wanted & mask;; at = (at + 1) & mask) {
+      const Slot& slot = slots[at];
+      if (slot.position1 == 0) return keyedAbsent;
+      if (slot.hash != wanted) continue;
+      const std::size_t position = slot.position1 - 1;
+      if (!isDead(position) && equal(position)) return position;
+    }
+  }
+  void insert(std::size_t hash, std::size_t position) {
+    if ((used + 1) * 2 > slots.size()) grow();
+    place(mix(hash), position);
+    ++used;
+  }
+  /** Rebuilds the table from the live entries `[0, count)`; `hashAt(position)` is the hash of the key there. */
+  template <typename HashAt>
+  void rebuild(std::size_t count, HashAt&& hashAt) {
+    std::size_t capacity = 32;
+    while (capacity < count * 2 + 2) capacity *= 2;
+    slots.assign(capacity, Slot{});
+    used = 0;
+    for (std::size_t position = 0; position < count; ++position) {
+      if (isDead(position)) continue;
+      place(mix(hashAt(position)), position);
+      ++used;
+    }
+    built = true;
+  }
+
+ private:
+  void place(std::uint32_t hash, std::size_t position) {
+    const std::size_t mask = slots.size() - 1;
+    std::size_t at = hash & mask;
+    while (slots[at].position1 != 0) at = (at + 1) & mask;
+    slots[at] = Slot{hash, static_cast<std::uint32_t>(position + 1)};
+  }
+  void grow() {
+    std::vector<Slot> old = std::move(slots);
+    slots.assign(old.empty() ? 32 : old.size() * 2, Slot{});
+    for (const Slot& slot : old) {
+      if (slot.position1 != 0) place(slot.hash, slot.position1 - 1);
     }
   }
 };
 
-/** Drops the dead slots of an indexed collection, keeping live entries in insertion order. The hash index keys serials, which do not move. */
+/** Drops the dead slots of an indexed collection, keeping live entries in insertion order. The caller rebuilds the hash index, since positions move. */
 template <typename Storage>
 inline void compactKeyed(Storage& storage, std::vector<std::uint64_t>& serials, KeyedIndex& index) {
   std::size_t kept = 0;
@@ -11806,13 +11857,12 @@ class Map {
     if constexpr (valueZeroHashable<K>) {
       if (index_.built) {
         // Leave the slot in place, dead, and drop what it held now: the entry is gone as far as the program can tell.
-        index_.erase(valueZeroHash(entries_[index].first), serials_[index]);
         if (index_.dead.empty()) index_.dead.assign(entries_.size(), 0);
         index_.dead[index] = 1;
         ++index_.deadCount;
         { [[maybe_unused]] K droppedKey = std::move(entries_[index].first); }
         { [[maybe_unused]] V droppedValue = std::move(entries_[index].second); }
-        if (detail::keyedWantsCompaction(index_, entries_.size())) detail::compactKeyed(entries_, serials_, index_);
+        if (detail::keyedWantsCompaction(index_, entries_.size())) { detail::compactKeyed(entries_, serials_, index_); rebuildIndex(); }
         return true;
       }
     }
@@ -11862,7 +11912,7 @@ class Map {
   const std::vector<std::pair<K, V>>& entries() const {
     if (view_) [[unlikely]] return view_->entries();
     // A caller holds the whole vector, so it has to be dense: dead slots go before it is handed out.
-    if (index_.deadCount != 0) detail::compactKeyed(entries_, serials_, index_);
+    if (index_.deadCount != 0) { detail::compactKeyed(entries_, serials_, index_); rebuildIndex(); }
     return entries_;
   }
 
@@ -11881,13 +11931,7 @@ class Map {
   std::size_t positionOf(const K& key) const {
     if constexpr (valueZeroHashable<K>) {
       if (index_.built) {
-        const auto range = index_.byHash.equal_range(valueZeroHash(key));
-        for (auto it = range.first; it != range.second; ++it) {
-          const auto at = std::lower_bound(serials_.begin(), serials_.end(), it->second);
-          const std::size_t position = static_cast<std::size_t>(at - serials_.begin());
-          if (sameValueZero(entries_[position].first, key)) return position;
-        }
-        return detail::keyedAbsent;
+        return index_.find(valueZeroHash(key), [&](std::size_t position) { return sameValueZero(entries_[position].first, key); });
       }
     }
     for (std::size_t position = 0; position < entries_.size(); ++position) {
@@ -11896,17 +11940,21 @@ class Map {
     return detail::keyedAbsent;
   }
 
+  /** Rebuilds the hash table from the live entries: when the map first outgrows a scan, and after compaction moved them. */
+  void rebuildIndex() const {
+    if constexpr (valueZeroHashable<K>) {
+      index_.rebuild(entries_.size(), [&](std::size_t position) { return valueZeroHash(entries_[position].first); });
+    }
+  }
+
   /** Keeps the index in step with an entry just appended, and builds it when the map first outgrows a scan. */
   void noteAppended() {
     if constexpr (valueZeroHashable<K>) {
       if (!index_.dead.empty()) index_.dead.push_back(0);
       if (index_.built) {
-        index_.byHash.emplace(valueZeroHash(entries_.back().first), serials_.back());
+        index_.insert(valueZeroHash(entries_.back().first), entries_.size() - 1);
       } else if (entries_.size() >= detail::keyedIndexThreshold) {
-        index_.byHash.reserve(entries_.size() * 2);
-        for (std::size_t position = 0; position < entries_.size(); ++position)
-          index_.byHash.emplace(valueZeroHash(entries_[position].first), serials_[position]);
-        index_.built = true;
+        rebuildIndex();
       }
     }
   }
@@ -12026,12 +12074,11 @@ class Set {
     if (index == detail::keyedAbsent) return false;
     if constexpr (valueZeroHashable<K>) {
       if (index_.built) {
-        index_.erase(valueZeroHash(items_[index]), serials_[index]);
         if (index_.dead.empty()) index_.dead.assign(items_.size(), 0);
         index_.dead[index] = 1;
         ++index_.deadCount;
         { [[maybe_unused]] K dropped = std::move(items_[index]); }
-        if (detail::keyedWantsCompaction(index_, items_.size())) detail::compactKeyed(items_, serials_, index_);
+        if (detail::keyedWantsCompaction(index_, items_.size())) { detail::compactKeyed(items_, serials_, index_); rebuildIndex(); }
         return true;
       }
     }
@@ -12048,7 +12095,7 @@ class Set {
   double size() const { return static_cast<double>(items_.size() - index_.deadCount); }
 
   const std::vector<K>& items() const {
-    if (index_.deadCount != 0) detail::compactKeyed(items_, serials_, index_);
+    if (index_.deadCount != 0) { detail::compactKeyed(items_, serials_, index_); rebuildIndex(); }
     return items_;
   }
 
@@ -12066,13 +12113,7 @@ class Set {
   std::size_t positionOf(const K& key) const {
     if constexpr (valueZeroHashable<K>) {
       if (index_.built) {
-        const auto range = index_.byHash.equal_range(valueZeroHash(key));
-        for (auto it = range.first; it != range.second; ++it) {
-          const auto at = std::lower_bound(serials_.begin(), serials_.end(), it->second);
-          const std::size_t position = static_cast<std::size_t>(at - serials_.begin());
-          if (sameValueZero(items_[position], key)) return position;
-        }
-        return detail::keyedAbsent;
+        return index_.find(valueZeroHash(key), [&](std::size_t position) { return sameValueZero(items_[position], key); });
       }
     }
     for (std::size_t position = 0; position < items_.size(); ++position) {
@@ -12081,16 +12122,20 @@ class Set {
     return detail::keyedAbsent;
   }
 
+  /** `Map::rebuildIndex`'s twin. */
+  void rebuildIndex() const {
+    if constexpr (valueZeroHashable<K>) {
+      index_.rebuild(items_.size(), [&](std::size_t position) { return valueZeroHash(items_[position]); });
+    }
+  }
+
   void noteAppended() {
     if constexpr (valueZeroHashable<K>) {
       if (!index_.dead.empty()) index_.dead.push_back(0);
       if (index_.built) {
-        index_.byHash.emplace(valueZeroHash(items_.back()), serials_.back());
+        index_.insert(valueZeroHash(items_.back()), items_.size() - 1);
       } else if (items_.size() >= detail::keyedIndexThreshold) {
-        index_.byHash.reserve(items_.size() * 2);
-        for (std::size_t position = 0; position < items_.size(); ++position)
-          index_.byHash.emplace(valueZeroHash(items_[position]), serials_[position]);
-        index_.built = true;
+        rebuildIndex();
       }
     }
   }
