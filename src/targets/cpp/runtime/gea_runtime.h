@@ -35393,28 +35393,44 @@ inline double min_invoke(void*, gea::Ref<gea::ArrayObject<double>> values) {
  * the standard formulation, and the one V8 uses -- removes both, and is exact
  * on the cases that should be exact (hypot(3, 4) is 5).
  */
-inline double hypot_invoke(void*, gea::Ref<gea::ArrayObject<double>> values) {
+/**
+ * The scaled sum of squares, over every present value `each` hands to it: the one body of `Math.hypot`, shared by the
+ * array form a callable value takes and the initializer-list form a direct call borrows from the stack.
+ */
+template <typename Each>
+inline double hypotScaled(Each&& each) {
   bool sawNaN = false;
+  bool sawInfinity = false;
   double largest = 0.0;
-  for (const auto& slot : values->slots()) {
-    if (!slot.present) continue;
-    if (std::isinf(slot.value)) return std::numeric_limits<double>::infinity();
-    if (std::isnan(slot.value)) {
-      sawNaN = true;
-      continue;
+  each([&](double value) {
+    if (std::isinf(value)) {
+      sawInfinity = true;
+      return;
     }
-    const double magnitude = std::fabs(slot.value);
+    if (std::isnan(value)) {
+      sawNaN = true;
+      return;
+    }
+    const double magnitude = std::fabs(value);
     if (magnitude > largest) largest = magnitude;
-  }
+  });
+  if (sawInfinity) return std::numeric_limits<double>::infinity();
   if (sawNaN) return std::numeric_limits<double>::quiet_NaN();
   if (largest == 0.0) return 0.0;
   double sumOfSquares = 0.0;
-  for (const auto& slot : values->slots()) {
-    if (!slot.present) continue;
-    const double scaled = slot.value / largest;
+  each([&](double value) {
+    const double scaled = value / largest;
     sumOfSquares += scaled * scaled;
-  }
+  });
   return largest * std::sqrt(sumOfSquares);
+}
+
+inline double hypot_invoke(void*, gea::Ref<gea::ArrayObject<double>> values) {
+  return hypotScaled([&](auto&& visit) {
+    for (const auto& slot : values->slots()) {
+      if (slot.present) visit(slot.value);
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -35544,6 +35560,12 @@ inline double minDirect(std::initializer_list<double> values) {
   double result = std::numeric_limits<double>::infinity();
   for (double value : values) result = detail::extremumStep<false>(result, value);
   return result;
+}
+// `Math.hypot(a, b, c)` as a direct call: the same scaled sum as the array form, over the borrowed stack sequence.
+inline double hypotDirect(std::initializer_list<double> values) {
+  return detail::hypotScaled([&](auto&& visit) {
+    for (double value : values) visit(value);
+  });
 }
 inline constexpr gea::HostFunction<double(gea::Ref<gea::ArrayObject<double>>), &detail::hypot_invoke> hypot{};
 // The sixteen members `lib.es2015.core.d.ts` adds to `Math` beyond the ES5 set

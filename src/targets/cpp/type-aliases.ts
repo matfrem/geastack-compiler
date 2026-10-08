@@ -61,6 +61,8 @@ export const typeAliasBlock = [
   `using ${compound.to} = ${compound.from};`,
   'template <class T> constexpr double gToDouble(const T& value) { return static_cast<double>(value); }',
   'template <class T> constexpr bool gToBool(T&& value) { return static_cast<bool>(std::forward<T>(value)); }',
+  '// JavaScript truthiness of a number: false for 0 and for NaN. The C++ conversion to bool is true for NaN, so it is spelled out here once.',
+  'template <class T> constexpr bool gTruthy(T value) { return value == value && value != 0; }',
   'template <class T> constexpr std::size_t gToSizeT(T&& value) { return static_cast<std::size_t>(std::forward<T>(value)); }',
   'template <class Cursor> inline auto gItems(Cursor& cursor) { return gea::cursorRange(cursor); }',
   ...throwHelperDefinitions

@@ -664,7 +664,7 @@ export const coreHostMembers: HostMemberTable = new Map<string, HostMember>([
   // the rest array; aliases and spreads keep the ordinary value spelling.
   ['Math.max', { kind: 'property', store: null, emit: 'gea::host::Math::max', numericRestCall: 'gea::host::Math::maxDirect({args})' }],
   ['Math.min', { kind: 'property', store: null, emit: 'gea::host::Math::min', numericRestCall: 'gea::host::Math::minDirect({args})' }],
-  ['Math.hypot', { kind: 'property', store: null, emit: 'gea::host::Math::hypot' }],
+  ['Math.hypot', { kind: 'property', store: null, emit: 'gea::host::Math::hypot', numericRestCall: 'gea::host::Math::hypotDirect({args})' }],
   // The sixteen `Math` members `gea_runtime.h` did not have. `cbrt` is v1's
   // (`gea::runtime::math::cbrt`, stdlib.cpp); the other fifteen are written
   // against ECMA-262 §21.3.2 there, because v1's own `gea::runtime::math`

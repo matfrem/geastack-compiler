@@ -10,18 +10,24 @@ import {
   displayPathsOf,
   dropDefaultedAttributes,
   dropOptionalWrappers,
+  dropRedundantDoubleCasts,
+  foldAutoDeclarations,
+  forwardSingleUseValues,
   foldBoolCasts,
   foldCallableInitialisers,
   foldDefaultedParameters,
   foldDoubleCasts,
   foldEmptyOptionalArguments,
+  foldConditionalAssignments,
   foldFieldSetters,
   foldIfStatements,
   foldKeyComparisons,
+  foldReturnJumps,
   foldReturnedValues,
   foldShortCircuits,
   foldSizeCasts,
   foldStringViews,
+  foldTruthiness,
   foldRangeVariables,
   foldThrowHelpers,
   indentBlocks,
@@ -534,4 +540,184 @@ test('doubled parentheses, member paths and negated paths lose the pair they do 
     'y = (*p).x; z = a / (*p); decltype((x)) w; h((a, b));'
   )
   assert.equal(unwrapRedundantParentheses('v = a - (-b); w = a-(-b);'), 'v = a - (-b); w = a-(-b);')
+})
+
+test('calls, indexes, exponents and comparisons lose the parentheses around them', () => {
+  assert.equal(
+    unwrapRedundantParentheses('for (long long i = 0; i < (n->length()); i += 3) { y = (pts->elementAt(i))->elementAt(0); }'),
+    'for (long long i = 0; i < n->length(); i += 3) { y = pts->elementAt(i)->elementAt(0); }'
+  )
+  assert.equal(
+    unwrapRedundantParentheses('b = f(x) > (3); c = v > (1e-12); if (g(v) < (0)) return (n);'),
+    'b = f(x) > 3; c = v > 1e-12; if (g(v) < 0) return n;'
+  )
+  assert.equal(unwrapRedundantParentheses('t = foo<T>(0);'), 't = foo<T>(0);')
+})
+
+test('an if / else that assigns one scalar either way is a conditional expression', () => {
+  const unit = lines(
+    'void f(bool flip) {',
+    '  double v1;',
+    '  if (flip) {',
+    '    v1 = -1;',
+    '  } else {',
+    '    v1 = 1;',
+    '  }',
+    '  use(v1);',
+    '}'
+  )
+  assert.equal(foldConditionalAssignments(unit), lines('void f(bool flip) {', '  double v1;', '  v1 = flip ? -1 : 1;', '  use(v1);', '}'))
+  const handle = unit.replace('double v1;', 'gRef<A> v1;')
+  assert.equal(foldConditionalAssignments(handle), handle)
+})
+
+test('a jump to a lone return is the return', () => {
+  const unit = lines('double f(double a, bool c) {', '  if (c) goto block6;', '  a = a + 1;', 'block6:', '  return a;', '}')
+  assert.equal(foldReturnJumps(unit), lines('double f(double a, bool c) {', '  if (c) return a;', '  a = a + 1;', '  return a;', '}'))
+  const late = lines('double f(bool c) {', '  if (c) goto block6;', '  double v = 1;', 'block6:', '  return v;', '}')
+  assert.equal(foldReturnJumps(late), late)
+})
+
+test('a truthiness test of a number is gTruthy', () => {
+  assert.equal(foldTruthiness('if (v120 == v120 && v120 != 0) { v0 = v120; }'), 'if (gTruthy(v120)) { v0 = v120; }')
+  assert.equal(foldTruthiness('if (a == b && b != 0) x;'), 'if (a == b && b != 0) x;')
+})
+
+test('a copy of a constant, and of a loop index that nothing writes before its last reader, is the original', () => {
+  const unit = lines(
+    'void f() {',
+    '  double v56 = gea::host::Math::PI;',
+    '  for (long long i = 0; i < n; i += 3) {',
+    '    long long v8 = i;',
+    '    a->set(v8, a->at(v8) + x);',
+    '  }',
+    '  use(v56);',
+    '}'
+  )
+  assert.equal(
+    inlineScalarCopies(unit),
+    lines(
+      'void f() {',
+      '  for (long long i = 0; i < n; i += 3) {',
+      '    a->set(i, a->at(i) + x);',
+      '  }',
+      '  use(gea::host::Math::PI);',
+      '}'
+    )
+  )
+  const written = lines(
+    'void f() {',
+    '  for (long long i = 0; i < n; i += 3) {',
+    '    long long v8 = i;',
+    '    i += 1;',
+    '    use(v8);',
+    '  }',
+    '}'
+  )
+  assert.equal(inlineScalarCopies(written), written)
+})
+
+test('a call in parentheses before a minus, a negated literal cast, a dereferenced truthiness test and a double cast of a double', () => {
+  assert.equal(
+    unwrapRedundantParentheses('double ux = (c->elementAt(0)) - b->elementAt(0);'),
+    'double ux = c->elementAt(0) - b->elementAt(0);'
+  )
+  assert.equal(foldDoubleCasts('f(static_cast<double>(-(1)), static_cast<double>((-2.5)));'), 'f((-1.0), (-2.5));')
+  assert.equal(foldTruthiness('if (!(id.has_value() && ((*id) == (*id) && (*id) != 0))) {'), 'if (!(id.has_value() && (gTruthy(*id)))) {')
+  assert.equal(
+    dropRedundantDoubleCasts(
+      lines('void f(double camYaw, long long n) {', '  double x = 1;', '  use(gToDouble(camYaw), gToDouble(n), gToDouble(x));', '}')
+    ),
+    lines('void f(double camYaw, long long n) {', '  double x = 1;', '  use(camYaw, gToDouble(n), x);', '}')
+  )
+  const shadowed = lines('void f(double a) {', '  {', '    long long a = 1;', '    use(gToDouble(a));', '  }', '}')
+  assert.equal(dropRedundantDoubleCasts(shadowed), shadowed)
+})
+
+test('a record declared and then assigned is declared with its value', () => {
+  assert.equal(
+    mergeDeclarations(lines('void f() {', '  gea_record_type_827 v72;', '  v72 = gea_record_type_827{};', '  use(v72);', '}')),
+    lines('void f() {', '  gea_record_type_827 v72 = gea_record_type_827{};', '  use(v72);', '}')
+  )
+})
+
+test('a defaulted handle parameter is one conditional, named after the parameter', () => {
+  const unit = lines(
+    'void f(gOptional<gRef<gArray<double>>> pos) {',
+    '  gRef<gArray<double>> v0;',
+    '  if (pos.has_value()) {',
+    '    v0 = *pos;',
+    '  } else {',
+    '    v0 = gea::arrayOf<double>({0.0, 0.0, 0.0});',
+    '  }',
+    '  use(v0);',
+    '}'
+  )
+  assert.equal(
+    foldConditionalAssignments(unit),
+    lines(
+      'void f(gOptional<gRef<gArray<double>>> pos) {',
+      '  gRef<gArray<double>> pos_default;',
+      '  pos_default = pos.has_value() ? *pos : gea::arrayOf<double>({0.0, 0.0, 0.0});',
+      '  use(pos_default);',
+      '}'
+    )
+  )
+  const other = unit.replace('gea::arrayOf<double>({0.0, 0.0, 0.0})', 'makeSomething()')
+  assert.equal(foldConditionalAssignments(other), other)
+})
+
+test('a declaration whose initialiser names the same type says the type once', () => {
+  assert.equal(
+    foldAutoDeclarations(
+      lines(
+        '  gRef<gArray<gRef<GrCell>>> v0 = gea::makeRef<gArray<gRef<GrCell>>>();',
+        '  gRef<GrBase> v1 = gea::makeRef<GrDerived>();',
+        '  gRef<gArray<double>> v2 = gea::arrayOf<double>({1.0, 2.0});',
+        '  gea_record_type_8 v3 = gea_record_type_8{};',
+        '  gOptional<double> v4 = gOptional<double>{0};',
+        '  double v5 = double(1);',
+        '  gRef<GrOther> v6 = gea::makeRef<GrOther>();'
+      )
+    ),
+    lines(
+      '  auto v0 = gea::makeRef<gArray<gRef<GrCell>>>();',
+      '  gRef<GrBase> v1 = gea::makeRef<GrDerived>();',
+      '  auto v2 = gea::arrayOf<double>({1.0, 2.0});',
+      '  auto v3 = gea_record_type_8{};',
+      '  auto v4 = gOptional<double>{0};',
+      '  double v5 = double(1);',
+      '  auto v6 = gea::makeRef<GrOther>();'
+    )
+  )
+})
+
+test('an optional handle field is assigned the handle, moved when it is the last use', () => {
+  assert.equal(
+    dropOptionalWrappers('p->nodes = (gOptional<gRef<gDictionary<gRef<GrNodePose>>>>{std::move(v139)}); p->gea_present_nodes = true;'),
+    'p->nodes = std::move(v139); p->gea_present_nodes = true;'
+  )
+})
+
+test('an array cursor is declared and initialised on one line with auto', () => {
+  const unit = lines(
+    'void f() {',
+    '  gea::LocalArrayCursor<gRef<GcCollectible>> v2;',
+    '  v2 = gea::LocalArrayCursor<gRef<GcCollectible>>(gea_this->items);',
+    '  for (gRef<GcCollectible> t : gItems(v2)) {',
+    '    use(t);',
+    '  }',
+    '}'
+  )
+  assert.equal(
+    foldAutoDeclarations(mergeDeclarations(unit)),
+    lines(
+      'void f() {',
+      '  auto v2 = gea::LocalArrayCursor<gRef<GcCollectible>>(gea_this->items);',
+      '  for (gRef<GcCollectible> t : gItems(v2)) {',
+      '    use(t);',
+      '  }',
+      '}'
+    )
+  )
 })
