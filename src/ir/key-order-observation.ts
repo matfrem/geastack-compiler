@@ -138,7 +138,19 @@ export const keyOrderObservationOf = (
     why = `${operation.kind}${operation.kind === 'call' ? `:${String(operation.hostTemplate)}:${String(operation.intrinsicOwnKeys)}:${String((operation as { callee?: { value?: unknown } }).callee?.value)}` : ''}`
     switch (operation.kind) {
       case 'own-property-keys':
+        observeAll(operation)
+        return
       case 'get-iterator':
+        // A `for`-`of` over an Array, a typed array, a string or a Map/Set yields its elements by value; it lists no
+        // record's keys, whatever the elements are. `for`-`in` and every other receiver stay observed.
+        if (
+          operation.protocol === 'iterator' &&
+          (operation.receiver.representation.kind === 'array-object' ||
+            operation.receiver.representation.kind === 'typed-array' ||
+            operation.receiver.representation.kind === 'string' ||
+            operation.receiver.representation.kind === 'keyed-collection')
+        )
+          return
         observeAll(operation)
         return
       case 'spread-copy':

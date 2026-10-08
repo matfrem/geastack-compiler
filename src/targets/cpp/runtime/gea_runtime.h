@@ -1702,7 +1702,16 @@ struct RefHeader {
 };
 
 /** How far past its block a non-standalone object sits; see `RefStride`. */
-inline constexpr std::size_t refHeaderStride = 16;
+inline constexpr std::size_t refHeaderStride = [] {
+  // Sixteen, or the platform's strictest alignment among the types a block's object holds by value: `std::function` and
+  // the allocator's `max_align_t`. Sony's libc++ aligns `std::function` to thirty-two, and an environment block holds
+  // one by value, so a fixed sixteen failed `makeRef`'s alignment check there. One constant for every block, so every
+  // reader of a block, whatever type it knows, finds the object at the same distance.
+  std::size_t stride = 16;
+  if (alignof(std::max_align_t) > stride) stride = alignof(std::max_align_t);
+  if (alignof(std::function<void()>) > stride) stride = alignof(std::function<void()>);
+  return stride;
+}();
 
 /** An ownership edge, including the exact allocation's destruction recipe. */
 struct CycleReference {
@@ -13621,7 +13630,7 @@ class PromiseJob {
     if constexpr (std::is_same_v<D, std::function<void()>>) {
       if (!callable) return;
     }
-    if constexpr (sizeof(D) <= sizeof(storage_) && alignof(D) <= alignof(std::max_align_t) && std::is_nothrow_move_constructible_v<D>) {
+    if constexpr (sizeof(D) <= sizeof(storage_) && alignof(D) <= kStorageAlignment && std::is_nothrow_move_constructible_v<D>) {
       ::new (static_cast<void*>(storage_)) D(std::forward<F>(callable));
       ops_ = &inlineOps<D>;
     } else {
@@ -13712,7 +13721,10 @@ class PromiseJob {
                                  (*job)();
                                }};
 
-  alignas(std::max_align_t) unsigned char storage_[4 * sizeof(void*)];
+  // Sixteen covers every job the runtime queues; a larger-aligned callable takes the heap path. Not `max_align_t`:
+  // that is thirty-two on some platforms, and a buffer aligned to it over-aligns every object holding a job.
+  static constexpr std::size_t kStorageAlignment = 16;
+  alignas(16) unsigned char storage_[4 * sizeof(void*)];
   const Ops* ops_ = nullptr;
 };
 
@@ -33336,6 +33348,9 @@ inline bool utcComponents(double ms, std::tm &out) {
   out = std::tm{};
 #if defined(_WIN32)
   return gmtime_s(&out, &seconds) == 0;
+#elif defined(__PS5__) || defined(__PROSPERO__) || defined(__ORBIS__)
+  // C11 Annex K: the time first, the result second, the result pointer returned (no `gmtime_r` on these platforms).
+  return gmtime_s(&seconds, &out) != nullptr;
 #else
   return gmtime_r(&seconds, &out) != nullptr;
 #endif
@@ -33393,6 +33408,8 @@ inline double localOffsetMs(double utcMs) {
   std::tm local{};
 #if defined(_WIN32)
   if (localtime_s(&local, &seconds) != 0) return 0.0;
+#elif defined(__PS5__) || defined(__PROSPERO__) || defined(__ORBIS__)
+  if (localtime_s(&seconds, &local) == nullptr) return 0.0;
 #else
   if (localtime_r(&seconds, &local) == nullptr) return 0.0;
 #endif

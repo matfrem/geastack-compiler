@@ -2379,7 +2379,8 @@ const renderTranslationUnitSession = (input: CppTranslationUnitInput): CppTransl
     // A module may evaluate once in EACH worker realm. Keep the ordinary
     // per-instance reference to its constructor's realm-owned method state.
     input.realmStorage ? new Set() : singleEvaluationClasses,
-    (shapeId, hasSymbolField) => nativeIntegrityRestricted.restrictsRecordShape(shapeId, hasSymbolField)
+    (shapeId, hasSymbolField) => nativeIntegrityRestricted.restrictsRecordShape(shapeId, hasSymbolField),
+    keyOrderUnobserved
   )
   const recursiveContainers = cppRecursiveContainerDeclarations(input.plan, emissionRepresentations)
 

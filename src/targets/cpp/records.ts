@@ -3331,7 +3331,14 @@ const renderStructDefinition = (
    * exactly once (`immortalMethodStateRoots`): its per-instance method-state
    * handle is then not an edge the collector follows -- see there.
    */
-  methodStateUntraced = false
+  methodStateUntraced = false,
+  /**
+   * Whether `ir/key-order-observation.ts` proved the creation order of every shape this struct answers for read by
+   * nothing in the program: the inline order slot (`gea_keyOrder`, sixteen bytes of every instance) then has no reader,
+   * and no store keeps it. The runtime falls back to its side tables for a struct without the member, so leaving it
+   * out is safe even where some path still asks.
+   */
+  omitKeyOrder = false
 ): string | CppRecordRefusal => {
   const isNarrowed = (field: FieldLike): boolean => narrowedSlots.has(integerStorageSlot(structName, field.key))
   // A class keeps every field inline. Its fields are stored by the
@@ -3625,7 +3632,7 @@ const renderStructDefinition = (
   // address lookup and no weak owner (`InlineKeyOrder`, gea_runtime.h). A class
   // declares its fields at construction, so its layout order is its creation
   // order and it never has one; a derived struct inherits its base's slot.
-  if (base === undefined && !classDispatch) {
+  if (base === undefined && !classDispatch && !omitKeyOrder) {
     members.push('gea_keyOrder')
     lines.push('  gea::detail::InlineKeyOrder gea_keyOrder{};')
   }
@@ -3703,7 +3710,9 @@ export const cppRecordDeclarations = (
   /** `program-facts.ts`'s `singleEvaluationClasses` -- which classes may hold their method state statically. */
   singleEvaluationClasses: ReadonlySet<DeclarationId> = new Set(),
   /** `integrity-restrictions.ts`'s `restrictsRecordShape` -- see `renderStructDefinition`'s `attributesConstant`. */
-  recordShapeRestricted: (shapeId: string, hasSymbolField: boolean) => boolean = () => true
+  recordShapeRestricted: (shapeId: string, hasSymbolField: boolean) => boolean = () => true,
+  /** `ir/key-order-observation.ts`: the shapes whose key creation order nothing reads -- see `renderStructDefinition`'s `omitKeyOrder`. */
+  keyOrderUnobserved: ReadonlySet<string> = new Set()
 ): {
   readonly declarations: readonly string[]
   readonly fieldDefinitionsByStruct: ReadonlyMap<string, readonly string[]>
@@ -3943,7 +3952,14 @@ export const cppRecordDeclarations = (
             )
         ) &&
         (shapesByStruct.get(structName)?.size ?? 0) > 0,
-      immortalStateRoots.has(structName)
+      immortalStateRoots.has(structName),
+      keyOrderUnobserved.size > 0 &&
+        !classStructNames.has(structName) &&
+        !links.has(structName) &&
+        !baseStructNames.has(structName) &&
+        layout.indexes.length === 0 &&
+        (shapesByStruct.get(structName)?.size ?? 0) > 0 &&
+        [...(shapesByStruct.get(structName) ?? [])].every((shapeId) => keyOrderUnobserved.has(shapeId))
     )
   })
   const refused = rendered.filter((entry): entry is CppRecordRefusal => typeof entry !== 'string')
