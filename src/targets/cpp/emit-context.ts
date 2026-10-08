@@ -1627,6 +1627,8 @@ export interface EmitContext {
    * element when a presence-checked conversion (`array[i]!`) is the only reader. See `CheckedElementRead`.
    */
   readonly checkedElementReads: Map<IrValueId, CheckedElementRead>
+  /** See `BoundHeapReadOnly`; bound by `emit.ts` right after the context is made, before any rendering. */
+  readonly heapReadOnly: BoundHeapReadOnly
   /**
    * An array literal withheld whole: its element expressions, in order, rather
    * than a temporary holding the object they were pushed into.
@@ -2177,6 +2179,7 @@ export const createEmitContext = (
     pendingClassTableLines: new Map(),
     deferredTexts: new Map(),
     checkedElementReads: new Map(),
+    heapReadOnly: { isReadOnly: () => false, actuals: new Set() },
     pendingPacks: new Map(),
     capacityHints,
     charCodeBuffers,
@@ -2601,6 +2604,17 @@ export const cppThunkName = (functionId: string): string => `${cppBodyName(funct
  * accessor family (`elementAt` for a double key, `elementAtIndex` for an integer one); the array has a `...Present`
  * twin of each that tests once and hands the element back by reference, or raises the same TypeError.
  */
+/**
+ * What the program-wide read-only proof (`heap-read-only.ts`) says about calls made from THIS body, bound once the
+ * context exists because the proof asks the context whether a member read is a plain load. `isReadOnly(owner)` is
+ * whether the callee only reads the heap; `actuals` are this body's values that are plain member reads (or
+ * conversions of them), which such a callee may be handed as references instead of copies.
+ */
+export interface BoundHeapReadOnly {
+  isReadOnly: (owner: FunctionId) => boolean
+  actuals: ReadonlySet<IrValueId>
+}
+
 export interface CheckedElementRead {
   readonly receiver: string
   readonly reader: 'elementAt' | 'elementAtIndex'

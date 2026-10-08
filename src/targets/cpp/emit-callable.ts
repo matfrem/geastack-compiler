@@ -1,6 +1,6 @@
 import { proxyArmWithoutHome } from '../../representation/proxy-carriers.js'
 import { hostConstructFrameOf, receivableArguments } from '../../ir/call-entry.js'
-import { stableBorrowEntryAccepts } from './borrowed-call-entry.js'
+import { stableBorrowEntryAccepts, type StableBorrowEntry } from './borrowed-call-entry.js'
 import { callableMemberAlternateSlot, callableMemberSlot } from '../../ir/callable-member-candidates.js'
 import { transferOf } from '../../ir/transfer.js'
 import { boxedValueText } from './emit-dynamic-properties.js'
@@ -15,7 +15,7 @@ import type {
   IrOperand,
   SuperInitializeOperation
 } from '../../ir/model.js'
-import type { DeclarationId, FunctionId } from '../../identity/ids.js'
+import type { DeclarationId, FunctionId, IrValueId } from '../../identity/ids.js'
 import type { CallableAbi, Representation } from '../../representation/model.js'
 import { classLayoutsConstructedBy } from '../../projection/classes.js'
 import { classFamilyOverridesOf, virtualDispatchKey } from '../../projection/dispatch.js'
@@ -1621,16 +1621,28 @@ export const emitCall = (ctx: EmitContext, lines: string[], operation: CallOpera
       )
       .map((argument) => argument.value)
   )
+  // A callee that only reads the heap (`heap-read-only.ts`) cannot write the storage a member read lives in, so a
+  // reference formal may be bound to the read itself instead of to a copy of it. Every actual must then be a slot the
+  // caller owns, a constant, or such a read: an argument that runs code of its own could write between the binding
+  // and the call.
+  const stableActualsFor = (entry: StableBorrowEntry): ReadonlySet<IrValueId> => {
+    if (!ctx.heapReadOnly.isReadOnly(entry.owner)) return ctx.stableBorrowActuals
+    const allowed = operation.arguments.every(
+      (argument) =>
+        ctx.stableBorrowActuals.has(argument.value) || ctx.heapReadOnly.actuals.has(argument.value) || ctx.constantTexts.has(argument.value)
+    )
+    return allowed ? new Set([...ctx.stableBorrowActuals, ...ctx.heapReadOnly.actuals]) : ctx.stableBorrowActuals
+  }
   const stableEntry =
     stableCandidate !== undefined &&
-    stableBorrowEntryAccepts(stableCandidate, operation.arguments, ctx.stableBorrowActuals, potentiallyMovingArguments)
+    stableBorrowEntryAccepts(stableCandidate, operation.arguments, stableActualsFor(stableCandidate), potentiallyMovingArguments)
       ? stableCandidate
       : undefined
   // A candidate's borrowed entry for this call, when it has one: the stable
   // entry its arguments are accepted by, or its borrowable body.
   const borrowedEntryOf = (target: FunctionId): string | undefined => {
     const stable = ctx.stableBorrowEntries.get(cppBodyName(target))
-    if (stable !== undefined && stableBorrowEntryAccepts(stable, operation.arguments, ctx.stableBorrowActuals, potentiallyMovingArguments))
+    if (stable !== undefined && stableBorrowEntryAccepts(stable, operation.arguments, stableActualsFor(stable), potentiallyMovingArguments))
       return stable.name
     return ctx.borrowableMemberBodies.has(target) ? cppBodyName(target) : undefined
   }

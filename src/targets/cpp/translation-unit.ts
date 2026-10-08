@@ -11,6 +11,7 @@ import { classFieldStorageOwnerOf, classMemberOf, classMethodOverrideOf } from '
 import { balanceCppUnits, chunkCppItems, cppChunkFileName, cppUnitByteBudget, type CppUnitItem } from './balanced-units.js'
 import { readonlyBorrowFormalsOf } from '../../ir/borrowed-call-arguments.js'
 import { stableBorrowEntryOf, type StableBorrowEntry } from './borrowed-call-entry.js'
+import { createHeapReadOnlyOracle } from './heap-read-only.js'
 import { programFactsOf } from '../../ir/program-facts.js'
 import { integrityRestrictionsOf } from '../../ir/integrity-restrictions.js'
 import { keyOrderObservationOf, nothingProvenUnobserved } from '../../ir/key-order-observation.js'
@@ -2591,6 +2592,18 @@ const renderTranslationUnitSession = (input: CppTranslationUnitInput): CppTransl
     borrowableMemberBodies.add(candidate)
   }
 
+  // Which bodies only read the heap: a reference formal may be bound to a field read of the caller when the callee
+  // provably writes nothing (`heap-read-only.ts`).
+  const heapReadOnly = createHeapReadOnlyOracle(
+    input.bodies,
+    isCoroutineBody,
+    (body) => !isRegionId(body.sourceOwner),
+    (body, declaration) => {
+      const placement = input.placements.get(declaration)
+      return placement?.storage.kind === 'local' && placement.storage.owner === body.sourceOwner && !captures.isBoxed(declaration)
+    }
+  )
+
   // Keep the old entry convention for every unproved caller. A second entry
   // may borrow stable caller slots even when the implementation re-enters JS.
   const stableBorrowEntries = new Map<string, StableBorrowEntry>()
@@ -2986,7 +2999,8 @@ const renderTranslationUnitSession = (input: CppTranslationUnitInput): CppTransl
         taskBodies,
         input.shortNames === true ? bindingNames : undefined,
         input.hoistedBindings,
-        input.shortNames === true
+        input.shortNames === true,
+        heapReadOnly
       )
       const stableEntry = stableBorrowEntries.get(cppBodyName(body.sourceOwner))
       const versioned = integerVersions.get(String(body.sourceOwner))

@@ -44,7 +44,8 @@ import type {
   ReceiverOperation,
   GlobalThisOperation,
   UnresolvableReferenceOperation,
-  YieldOperation
+  YieldOperation,
+  GetOperation
 } from '../../ir/model.js'
 import type { EmitReturnAtYield } from './emit-exceptions.js'
 import { allOperationsOf } from '../../ir/model.js'
@@ -161,6 +162,7 @@ import { mergeWritesOf } from './emit-namespaces.js'
 import { templateText, toStringRefusal } from './emit-tostring.js'
 import { mixedDynamicPlusText } from './emit-mixed-binary.js'
 import { emitFieldStore, emitGet, isPlainMemberRead } from './emit-properties.js'
+import { noHeapReadOnly, type HeapReadOnlyOracle } from './heap-read-only.js'
 import { directClassMethodBody } from './class-properties/emit-class-properties.js'
 import { classMemberOf, lazyCalleeReadsOf, structNameOfReceiver } from './class-layout.js'
 import {
@@ -2637,7 +2639,9 @@ export const emitBody = (
   // `var` cells (`CppTranslationUnitInput.hoistedBindings`): declared once for the whole call, never per turn of a loop.
   hoistedBindings: ReadonlySet<DeclarationId> = new Set(),
   // Write the natural loops as `for (;;)` with `continue` and `break` (`emit-loops.ts`); off, every edge is a `goto`.
-  structuredLoops = false
+  structuredLoops = false,
+  // The program-wide proof of which bodies only read the heap (`heap-read-only.ts`).
+  heapReadOnly: HeapReadOnlyOracle = noHeapReadOnly
 ): readonly CppArtifact[] => {
   // Every fact this body settles before a single line renders, computed here
   // -- from `body` and the plain, already-available inputs above -- and
@@ -2780,6 +2784,10 @@ export const emitBody = (
     taskBodies,
     fusedAwaitCallsOf(body)
   )
+  // Bound here, not at creation: whether a member read is a plain load is a question the context answers.
+  const plainMemberRead = (operation: GetOperation, key: string | null): boolean => isPlainMemberRead(ctx, operation, key)
+  ctx.heapReadOnly.isReadOnly = (owner) => heapReadOnly.isReadOnly(owner, plainMemberRead)
+  ctx.heapReadOnly.actuals = heapReadOnly.readActuals(body, plainMemberRead)
   // `ownedValues` stays a genuine render-time OUTPUT buffer (`EmitContext`'s
   // own doc: `defineValue` grows it as each operation's result is named) --
   // unlike `ownedDyingValues` above, a formal argument's membership in it is
