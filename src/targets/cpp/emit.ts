@@ -1324,6 +1324,22 @@ const emitConvert = (ctx: EmitContext, lines: string[], operation: ConvertOperat
   // The node lowering named on this instruction, rendered by its recipe
   // (`alignedValueText` asks the census for the same pair and renders the
   // same node; a pair the census refused is its drift row, and the chain's).
+  // `array[i]!` over a read nothing else uses: the element, tested once, by reference, instead of the `Optional` the read
+  // would have built and `presentOrThrow` unwrapped. Only when the conversion adds nothing (the payload IS the element).
+  const checkedRead =
+    operation.presence === 'checked' && ctx.deferredTexts.has(operation.source.value)
+      ? ctx.checkedElementReads.get(operation.source.value)
+      : undefined
+  const sourceRepresentation = operation.source.representation
+  if (
+    checkedRead !== undefined &&
+    sourceRepresentation.kind === 'optional' &&
+    representationKey(sourceRepresentation.payload) === representationKey(checkedRead.element) &&
+    representationKey(operation.result.representation) === representationKey(checkedRead.element)
+  ) {
+    lines.push(`${defineValue(ctx, operation.result)} = ${checkedRead.receiver}->${checkedRead.reader}Present(${checkedRead.key});`)
+    return
+  }
   const named = ctx.conversions.nodeById(operation.conversionUse)
   // A coercion and an exact-arm projection each share their (source, target)
   // pair with the store node `alignedValueText` would look up, so for those

@@ -5139,6 +5139,8 @@ export interface ConversionSite {
   readonly virtualDispatch?: ReadonlyMap<string, CallableAbi>
   /** The function facts a minted function object registers (`cppThunkEntryText`); absent where a site mints none. */
   readonly functionFacts?: EmitContext['functionFacts']
+  /** Absence-capable array element reads, for `array[i]!` (`EmitContext.checkedElementReads`); absent where a site has no use for them. */
+  readonly checkedElementReads?: EmitContext['checkedElementReads']
   /** The function an expression is known to run (`EmitContext.callableEntryTexts`); absent where a site records none. */
   readonly knownCallableEntry?: (text: string) => FunctionId | null
 }

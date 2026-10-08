@@ -1623,6 +1623,11 @@ export interface EmitContext {
   /** The expression each deferred value stands for, recorded by `emit.ts` when its statement is withheld and substituted by `operandText`. */
   readonly deferredTexts: Map<IrValueId, string>
   /**
+   * The array element reads whose result is `T | undefined`, by result value: what to ask the array for to get the
+   * element when a presence-checked conversion (`array[i]!`) is the only reader. See `CheckedElementRead`.
+   */
+  readonly checkedElementReads: Map<IrValueId, CheckedElementRead>
+  /**
    * An array literal withheld whole: its element expressions, in order, rather
    * than a temporary holding the object they were pushed into.
    *
@@ -2171,6 +2176,7 @@ export const createEmitContext = (
     classTableRoots: bodyFacts.classTableRoots,
     pendingClassTableLines: new Map(),
     deferredTexts: new Map(),
+    checkedElementReads: new Map(),
     pendingPacks: new Map(),
     capacityHints,
     charCodeBuffers,
@@ -2586,6 +2592,22 @@ export const cppThunkName = (functionId: string): string => `${cppBodyName(funct
  * `abiType` is `cppAbiType` of the thunk's own convention, which the
  * registry's `Invoke` template parameter must match exactly.
  */
+/**
+ * An absence-capable array element read, remembered so that `array[i]!` need not build the `Optional` it then unwraps.
+ *
+ * The read publishes `T | undefined` as `(has ? Optional<T>(array->elementAt(i)) : Optional<T>())`, and a
+ * non-null assertion on it is `presentOrThrow` over that conditional: a presence test, a copy of the element into a
+ * temporary (a retain and a release for a handle), the test again, and a second copy out. `reader` is the array's own
+ * accessor family (`elementAt` for a double key, `elementAtIndex` for an integer one); the array has a `...Present`
+ * twin of each that tests once and hands the element back by reference, or raises the same TypeError.
+ */
+export interface CheckedElementRead {
+  readonly receiver: string
+  readonly reader: 'elementAt' | 'elementAtIndex'
+  readonly key: string
+  readonly element: Representation
+}
+
 export interface CallableFactsSpelling {
   readonly abiType: string
   readonly name: string
@@ -2725,6 +2747,14 @@ export const unwrapPresentValue = (ctx: EmitContext, lines: string[], operand: I
     ctx.nextValueOrdinal += 1
     ctx.valueNames.set(value, name)
     ctx.declarations.push({ name, type: cppTypeOf(operand.representation.payload) })
+    // `array[i]!.x`: the array's own tested read (one test, the element by reference) instead of the `Optional` that
+    // would be built, tested, and unwrapped. The raised TypeError names the absent value rather than a nullish
+    // property read, which is the same failure reached one step earlier.
+    const checkedRead = ctx.deferredTexts.has(operand.value) ? ctx.checkedElementReads.get(operand.value) : undefined
+    if (checkedRead !== undefined && representationKey(operand.representation.payload) === representationKey(checkedRead.element)) {
+      lines.push(`${name} = ${checkedRead.receiver}->${checkedRead.reader}PresentForProperty(${checkedRead.key});`)
+      return { value, representation: operand.representation.payload }
+    }
     lines.push(`if (!(${operandText(ctx, operand)}).has_value()) gea::host::throwGetPropertyOfNullish<void>();`)
     lines.push(`${name} = *${operandText(ctx, operand)};`)
   }

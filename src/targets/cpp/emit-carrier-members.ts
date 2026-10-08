@@ -144,7 +144,11 @@ const absentCapableElementText = (
     carrier.kind === 'tagged-union'
       ? alignedValueText(ctx, 'emit-carrier-members.ts:141', { kind: 'undefined' }, carrier, cppUndefinedValue)
       : `${cppTypeOf(carrier)}()`
-  return absent === null ? null : `(${receiverText}->${has}(${keyText}) ? ${present} : ${absent})`
+  if (absent === null) return null
+  if (result !== null && result.representation.kind === 'optional') {
+    ctx.checkedElementReads?.set(result.id, { receiver: receiverText, reader, key: keyText, element })
+  }
+  return `(${receiverText}->${has}(${keyText}) ? ${present} : ${absent})`
 }
 
 /**

@@ -6365,6 +6365,14 @@ namespace detail {
   gea::detail::abortAfterFlush();
 }
 
+[[noreturn]] inline void failAbsentRequiredElement() {
+  bigint_detail::fail("TypeError", "Cannot use an absent value where the program requires one");
+}
+
+[[noreturn]] inline void failAbsentElementProperty() {
+  bigint_detail::fail("TypeError", "Cannot read properties of undefined");
+}
+
 [[noreturn]] inline void failUndefinedElement() {
   bigint_detail::fail("TypeError", "a present undefined Array element was read through a carrier that excludes undefined");
 }
@@ -7013,6 +7021,34 @@ struct ArrayObject {
   bool hasElementValueAtIndex(long long index) const {
     return index >= 0 && static_cast<size_t>(index) < size() && present(static_cast<size_t>(index)) &&
            !elementIsUndefined(static_cast<size_t>(index));
+  }
+
+  /**
+   * `array[key]!` over a read whose result may be `undefined`: the element, tested once and handed back by reference,
+   * or the TypeError `presentOrThrow` raises over the `Optional` the read would otherwise build. A hole, an index
+   * past the end and a stored `undefined` all read as absent there, and all raise here.
+   */
+  const Element& elementAtPresent(double key) const {
+    if (!hasElementValue(key)) [[unlikely]] detail::failAbsentRequiredElement();
+    return at(static_cast<size_t>(key));
+  }
+
+  /** `elementAtPresent` for `array[key]!.member`: the same test, raising the TypeError a property read of `undefined` raises. */
+  const Element& elementAtPresentForProperty(double key) const {
+    if (!hasElementValue(key)) [[unlikely]] detail::failAbsentElementProperty();
+    return at(static_cast<size_t>(key));
+  }
+
+  /** `elementAtPresentForProperty`'s integer-keyed twin. */
+  const Element& elementAtIndexPresentForProperty(long long index) const {
+    if (!hasElementValueAtIndex(index)) [[unlikely]] detail::failAbsentElementProperty();
+    return at(static_cast<size_t>(index));
+  }
+
+  /** `elementAtPresent`'s integer-keyed twin. */
+  const Element& elementAtIndexPresent(long long index) const {
+    if (!hasElementValueAtIndex(index)) [[unlikely]] detail::failAbsentRequiredElement();
+    return at(static_cast<size_t>(index));
   }
 
   /**
