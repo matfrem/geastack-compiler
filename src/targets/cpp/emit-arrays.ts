@@ -345,15 +345,26 @@ export const emitAllocateArrayObject = (ctx: EmitContext, lines: string[], opera
         const pair = representation.element.kind === 'record' ? representation.element : null
         const first = pair?.fields[0]
         const second = pair?.fields[1]
-        const matches =
-          pair !== null &&
-          pair.fields.length === 2 &&
-          first?.key === '0' &&
-          second?.key === '1' &&
+        // ...or an Array of the one carrier both halves have (`makeMapEntry`'s shared-array pair): a tuple
+        // `[number, number]` the program also uses as a `number[]` is carried as the Array it is.
+        const element = representation.element
+        const arrayPair =
+          element.kind === 'array-object' &&
+          element.ownership === 'shared-refcount' &&
           spread.value !== null &&
-          representationKey(first.value) === representationKey(spread.key) &&
-          representationKey(second.value) === representationKey(spread.value) &&
+          representationKey(element.element) === representationKey(spread.key) &&
+          representationKey(element.element) === representationKey(spread.value) &&
           slot.from === 0
+        const matches =
+          arrayPair ||
+          (pair !== null &&
+            pair.fields.length === 2 &&
+            first?.key === '0' &&
+            second?.key === '1' &&
+            spread.value !== null &&
+            representationKey(first.value) === representationKey(spread.key) &&
+            representationKey(second.value) === representationKey(spread.value) &&
+            slot.from === 0)
         if (!matches) {
           throw createCppEmitBlockedError(
             `conversion:map-pair->${representationKey(representation.element)}`,
