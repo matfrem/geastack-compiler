@@ -33,3 +33,6 @@ and times each beside Node running the same TypeScript file. The programs cover 
 `Float32Array` stencils, small-object allocation, collections and closures. Each prints its own elapsed time and a
 checksum, so the output says both that the two runs agree and how long each took. It is a measurement, not a test: it
 needs clang on the path, and a figure is a tendency on one machine (`BENCH_OPT`, `BENCH_SAMPLES`).
+
+`test/bench/awfy/` holds typed ports of four Are We Fast Yet benchmarks (`BENCH_DIR=test/bench/awfy`). The figures at the last
+full run, what was done for them and what is still slow are in [PERFORMANCE.md](PERFORMANCE.md).
