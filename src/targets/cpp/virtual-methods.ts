@@ -488,7 +488,11 @@ export const prototypeReadHooks = (
         ...abi.parameters.map((p, i) => `${cppCallableParameterType(p)} ${cppFormalName(i)}`)
       ]
       const actuals = ['gea_receiver', ...abi.parameters.map((_, i) => cppFormalName(i))]
-      const thunk = `+[](void*, ${formals.join(', ')}) -> ${cppResultTypeOf(abi.result)} { return ${cppBodyName(method.callable)}(${actuals.join(', ')}); }`
+      // The lambda is converted by a cast to the entry's own function-pointer type rather than by a unary plus:
+      // MSVC's front end fails with an internal error (C1001, p1inl.c) on a `+[]` lambda nested in the box call this
+      // text sits in, and does not on the same lambda cast explicitly.
+      const entryType = `${cppResultTypeOf(abi.result)}(*)(void*, ${[cppTypeOf(receiver), ...abi.parameters.map(cppCallableParameterType)].join(', ')})`
+      const thunk = `static_cast<${entryType}>([](void*, ${formals.join(', ')}) -> ${cppResultTypeOf(abi.result)} { return ${cppBodyName(method.callable)}(${actuals.join(', ')}); })`
       const identified =
         `gea::nativeClassMethodValue<${cppClassName(owner.declaration)}, &${cppCallableDeclarationTagName(callable)}>` +
         `(this->gea_method_state, ${cppTypeOf(value)}{${thunk}, nullptr})`
