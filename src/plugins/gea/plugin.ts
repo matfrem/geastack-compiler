@@ -277,7 +277,7 @@ export const geaPlugin: CompilerPlugin = {
           // has to collapse the definitions rather than reject them. v1 emits
           // it with the same attribute.
           {
-            text: 'void __attribute__((weak)) gea_cpp_clear_microtasks() {\n#ifdef GEA_HOST_DECLARED\n  ::gea::jsx::detail::clearMicrotasks();\n#endif\n}',
+            text: 'void GEA_WEAK gea_cpp_clear_microtasks() {\n#ifdef GEA_HOST_DECLARED\n  ::gea::jsx::detail::clearMicrotasks();\n#endif\n}',
             requires: null
           },
           // The engine's other pair of program-side entry points, declared the
@@ -302,12 +302,12 @@ export const geaPlugin: CompilerPlugin = {
           // a resident build links several apps into one binary and the linker
           // has to collapse the definitions rather than reject them.
           {
-            text: 'extern "C" void __attribute__((weak)) gea_cycle_collection_defer_begin() {\n  ++gea::detail::cycleState().deferDepth;\n}',
+            text: 'extern "C" void GEA_WEAK gea_cycle_collection_defer_begin() {\n  ++gea::detail::cycleState().deferDepth;\n}',
             requires: 'cycle-collectable-program'
           },
           {
             text:
-              'extern "C" void __attribute__((weak)) gea_cycle_collection_defer_end() {\n' +
+              'extern "C" void GEA_WEAK gea_cycle_collection_defer_end() {\n' +
               '  auto& gea_state = gea::detail::cycleState();\n' +
               '  if (gea_state.deferDepth == 0) {\n' +
               '    std::fprintf(stderr, "gea: cycle collection deferral underflow\\n");\n' +

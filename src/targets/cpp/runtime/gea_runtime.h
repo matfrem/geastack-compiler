@@ -56,6 +56,17 @@
 #include <iterator>
 #include <cstring>
 #include <tuple>
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+// MSVC has no type attribute for an access that may alias another type, and no strict-aliasing analysis either.
+#define GEA_MAY_ALIAS_TYPEDEF(Type, Name) using Name = Type
+// The default hooks the generated unit defines are weak, so a host that defines its own wins. MSVC has no weak
+// functions: its definition is the only one, which is right for a build that has no other.
+#define GEA_WEAK
+#else
+#define GEA_MAY_ALIAS_TYPEDEF(Type, Name) typedef Type __attribute__((__may_alias__)) Name
+#define GEA_WEAK __attribute__((weak))
+#endif
 #include "gea_pcm.h"
 
 /**
@@ -1739,6 +1750,8 @@ struct RefVisitor {
  * "satisfaction of constraint ... depends on itself"). The derivation test
  * rejects that candidate first; a wrapper still reaches its base's friend.
  */
+struct GeaTraceRefsNoMatch {};
+void geaTraceRefs(GeaTraceRefsNoMatch);
 template <typename T>
 struct TraceEdges {
   // Generated layouts return false_type when every physical field is a leaf.
@@ -4049,23 +4062,88 @@ namespace detail {
          !(value == 0.0 && std::signbit(value));
 }
 
+/**
+ * `__builtin_{add,sub,mul}_overflow` and the bit scans, in a spelling every supported compiler has. MSVC (Xbox, and
+ * Win64 under UBT) has no builtins by those names: the add and subtract are done unsigned and the overflow read off
+ * the sign bits, the multiply by its 128-bit product.
+ */
+namespace detail {
+#if defined(_MSC_VER) && !defined(__clang__)
+inline bool addOverflows(long long left, long long right, long long* result) {
+  const auto sum = static_cast<unsigned long long>(left) + static_cast<unsigned long long>(right);
+  *result = static_cast<long long>(sum);
+  return ((left ^ *result) & (right ^ *result)) < 0;
+}
+inline bool subtractOverflows(long long left, long long right, long long* result) {
+  const auto difference = static_cast<unsigned long long>(left) - static_cast<unsigned long long>(right);
+  *result = static_cast<long long>(difference);
+  return ((left ^ right) & (left ^ *result)) < 0;
+}
+inline bool multiplyOverflows(long long left, long long right, long long* result) {
+#if defined(_M_X64)
+  long long high;
+  *result = _mul128(left, right, &high);
+  return high != (*result >> 63);
+#else
+  *result = static_cast<long long>(static_cast<unsigned long long>(left) * static_cast<unsigned long long>(right));
+  return __mulh(left, right) != (*result >> 63);
+#endif
+}
+inline unsigned countLeadingZeros32(std::uint32_t value) {
+  unsigned long index;
+  _BitScanReverse(&index, value);
+  return 31u - static_cast<unsigned>(index);
+}
+inline unsigned countTrailingZeros64(std::uint64_t value) {
+#if defined(_M_X64) || defined(_M_ARM64)
+  unsigned long index;
+  _BitScanForward64(&index, value);
+  return static_cast<unsigned>(index);
+#else
+  unsigned long index;
+  if (_BitScanForward(&index, static_cast<unsigned long>(value))) return static_cast<unsigned>(index);
+  _BitScanForward(&index, static_cast<unsigned long>(value >> 32));
+  return 32u + static_cast<unsigned>(index);
+#endif
+}
+inline unsigned countTrailingZeros32(std::uint32_t value) {
+  unsigned long index;
+  _BitScanForward(&index, value);
+  return static_cast<unsigned>(index);
+}
+inline std::uint16_t byteSwap16(std::uint16_t value) { return _byteswap_ushort(value); }
+inline std::uint32_t byteSwap32(std::uint32_t value) { return _byteswap_ulong(value); }
+inline std::uint64_t byteSwap64(std::uint64_t value) { return _byteswap_uint64(value); }
+#else
+inline unsigned countTrailingZeros32(std::uint32_t value) { return static_cast<unsigned>(__builtin_ctz(value)); }
+inline std::uint16_t byteSwap16(std::uint16_t value) { return __builtin_bswap16(value); }
+inline std::uint32_t byteSwap32(std::uint32_t value) { return __builtin_bswap32(value); }
+inline std::uint64_t byteSwap64(std::uint64_t value) { return __builtin_bswap64(value); }
+inline bool addOverflows(long long left, long long right, long long* result) { return __builtin_add_overflow(left, right, result); }
+inline bool subtractOverflows(long long left, long long right, long long* result) { return __builtin_sub_overflow(left, right, result); }
+inline bool multiplyOverflows(long long left, long long right, long long* result) { return __builtin_mul_overflow(left, right, result); }
+inline unsigned countLeadingZeros32(std::uint32_t value) { return static_cast<unsigned>(__builtin_clz(value)); }
+inline unsigned countTrailingZeros64(std::uint64_t value) { return static_cast<unsigned>(__builtin_ctzll(value)); }
+#endif
+}  // namespace detail
+
 [[gnu::always_inline]] inline long long faithfulIntegerSum(long long left, long long right) {
   long long result;
-  if (!__builtin_add_overflow(left, right, &result) && detail::withinExactIntegers(result)) [[likely]]
+  if (!::gea::detail::addOverflows(left, right, &result) && detail::withinExactIntegers(result)) [[likely]]
     return result;
   return detail::roundedIntegerResult(static_cast<double>(left) + static_cast<double>(right));
 }
 
 [[gnu::always_inline]] inline long long faithfulIntegerDifference(long long left, long long right) {
   long long result;
-  if (!__builtin_sub_overflow(left, right, &result) && detail::withinExactIntegers(result)) [[likely]]
+  if (!::gea::detail::subtractOverflows(left, right, &result) && detail::withinExactIntegers(result)) [[likely]]
     return result;
   return detail::roundedIntegerResult(static_cast<double>(left) - static_cast<double>(right));
 }
 
 [[gnu::always_inline]] inline long long faithfulIntegerProduct(long long left, long long right) {
   long long result;
-  if (!__builtin_mul_overflow(left, right, &result) && detail::withinExactIntegers(result)) [[likely]]
+  if (!::gea::detail::multiplyOverflows(left, right, &result) && detail::withinExactIntegers(result)) [[likely]]
     return result;
   return detail::roundedIntegerResult(static_cast<double>(left) * static_cast<double>(right));
 }
@@ -8057,7 +8135,7 @@ inline long long integerImul(std::uint32_t left, std::uint32_t right) {
 inline long long integerAbs(long long value) { return value < 0 ? -value : value; }
 
 // `Math.clz32` of an argument that has already undergone ToUint32.
-inline long long integerClz32(std::uint32_t value) { return value == 0 ? 32 : __builtin_clz(value); }
+inline long long integerClz32(std::uint32_t value) { return value == 0 ? 32 : ::gea::detail::countLeadingZeros32(value); }
 
 inline long long integerBitwiseOr(long long left, long long right) {
   return static_cast<std::int32_t>(static_cast<std::uint32_t>(left) | static_cast<std::uint32_t>(right));
@@ -8285,7 +8363,7 @@ class TypedArray {
   // one-byte memcpy is a plain `lbu`/`sb` anyway.
   [[gnu::always_inline]] static T loadElement(const T* base, std::size_t index) {
     if constexpr (std::is_arithmetic_v<T>) {
-      typedef T __attribute__((__may_alias__)) Aliased;
+      GEA_MAY_ALIAS_TYPEDEF(T, Aliased);
       return reinterpret_cast<const Aliased*>(base)[index];
     } else {
       T value;
@@ -8295,7 +8373,7 @@ class TypedArray {
   }
   [[gnu::always_inline]] static void storeElement(T* base, std::size_t index, T value) {
     if constexpr (std::is_arithmetic_v<T>) {
-      typedef T __attribute__((__may_alias__)) Aliased;
+      GEA_MAY_ALIAS_TYPEDEF(T, Aliased);
       reinterpret_cast<Aliased*>(base)[index] = value;
     } else {
       std::memcpy(reinterpret_cast<std::uint8_t*>(base) + index * sizeof(T), &value, sizeof(T));
@@ -8986,9 +9064,9 @@ class DataView {
 
   template <typename Raw>
   static Raw byteSwap(Raw value) {
-    if constexpr (sizeof(Raw) == 2) return static_cast<Raw>(__builtin_bswap16(static_cast<std::uint16_t>(value)));
-    else if constexpr (sizeof(Raw) == 4) return static_cast<Raw>(__builtin_bswap32(static_cast<std::uint32_t>(value)));
-    else return static_cast<Raw>(__builtin_bswap64(static_cast<std::uint64_t>(value)));
+    if constexpr (sizeof(Raw) == 2) return static_cast<Raw>(::gea::detail::byteSwap16(static_cast<std::uint16_t>(value)));
+    else if constexpr (sizeof(Raw) == 4) return static_cast<Raw>(::gea::detail::byteSwap32(static_cast<std::uint32_t>(value)));
+    else return static_cast<Raw>(::gea::detail::byteSwap64(static_cast<std::uint64_t>(value)));
   }
 
   std::uint8_t* at(double offset, std::size_t width) const {
@@ -13707,14 +13785,14 @@ class PromiseJob {
       [](void* to, void* from) noexcept {
         D* source = std::launder(static_cast<D*>(from));
         ::new (to) D(std::move(*source));
-        source->~D();
+        std::destroy_at(source);
       },
-      [](void* storage) noexcept { std::launder(static_cast<D*>(storage))->~D(); },
+      [](void* storage) noexcept { std::destroy_at(std::launder(static_cast<D*>(storage))); },
       [](void* storage) {
         D* job = std::launder(static_cast<D*>(storage));
         struct Destroy {
           D* job;
-          ~Destroy() { job->~D(); }
+          ~Destroy() { std::destroy_at(job); }
         } destroy{job};
         (*job)();
       }};
@@ -22053,7 +22131,7 @@ bool eachNativeDeclaredField(const T& self, Visit&& visit) {
           for (std::size_t at = 0; at < count; ++at) bits |= std::uint64_t{static_cast<unsigned char>(flags[at])} << (at * 8);
         }
         while (bits != 0) {
-          const unsigned byte = static_cast<unsigned>(__builtin_ctzll(bits)) >> 3;
+          const unsigned byte = ::gea::detail::countTrailingZeros64(bits) >> 3;
           bits &= ~(std::uint64_t{0xff} << (byte * 8));
           if (visitAt(word + byte)) return true;
         }
@@ -24367,7 +24445,8 @@ struct RecordStructOf<gea::Ref<T>> {
 
 template <typename Target, typename Source>
 struct AssignStep {
-  bool RecordStructOf<Source>::type::* present;
+  using SourceStruct = typename RecordStructOf<Source>::type;
+  bool SourceStruct::* present;
   void (*copy)(const Target&, const Source&);
 };
 
@@ -41097,7 +41176,7 @@ inline std::size_t jsonScan(const char* data, std::size_t size, std::size_t from
     __m128i bad = _mm_or_si128(_mm_cmpeq_epi8(chunk, _mm_set1_epi8('"')), _mm_cmpeq_epi8(chunk, _mm_set1_epi8('\\')));
     if constexpr (controls) bad = _mm_or_si128(bad, _mm_cmpeq_epi8(_mm_subs_epu8(chunk, _mm_set1_epi8(0x1f)), _mm_setzero_si128()));
     const int mask = _mm_movemask_epi8(bad);
-    if (mask != 0) return at + static_cast<std::size_t>(__builtin_ctz(static_cast<unsigned>(mask)));
+    if (mask != 0) return at + static_cast<std::size_t>(::gea::detail::countTrailingZeros32(static_cast<unsigned>(mask)));
     at += 16;
   }
   // The tail in ONE overlapping vector, for the same reason the word path takes
@@ -41116,7 +41195,7 @@ inline std::size_t jsonScan(const char* data, std::size_t size, std::size_t from
     __m128i bad = _mm_or_si128(_mm_cmpeq_epi8(chunk, _mm_set1_epi8('"')), _mm_cmpeq_epi8(chunk, _mm_set1_epi8('\\')));
     if constexpr (controls) bad = _mm_or_si128(bad, _mm_cmpeq_epi8(_mm_subs_epu8(chunk, _mm_set1_epi8(0x1f)), _mm_setzero_si128()));
     const int mask = _mm_movemask_epi8(bad);
-    return mask == 0 ? size : (size - 16) + static_cast<std::size_t>(__builtin_ctz(static_cast<unsigned>(mask)));
+    return mask == 0 ? size : (size - 16) + static_cast<std::size_t>(::gea::detail::countTrailingZeros32(static_cast<unsigned>(mask)));
   }
 #elif defined(__ARM_NEON)
   // The same, with NEON's standard movemask substitute: narrow each 16-bit
@@ -41127,7 +41206,7 @@ inline std::size_t jsonScan(const char* data, std::size_t size, std::size_t from
     uint8x16_t bad = vorrq_u8(vceqq_u8(chunk, vdupq_n_u8('"')), vceqq_u8(chunk, vdupq_n_u8('\\')));
     if constexpr (controls) bad = vorrq_u8(bad, vcltq_u8(chunk, vdupq_n_u8(0x20)));
     const std::uint64_t reduced = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(bad), 4)), 0);
-    if (reduced != 0) return at + (static_cast<std::size_t>(__builtin_ctzll(reduced)) >> 2);
+    if (reduced != 0) return at + (static_cast<std::size_t>(::gea::detail::countTrailingZeros64(reduced)) >> 2);
     at += 16;
   }
   if (at < size && size >= 16 && size - 16 >= from) {
@@ -41135,7 +41214,7 @@ inline std::size_t jsonScan(const char* data, std::size_t size, std::size_t from
     uint8x16_t bad = vorrq_u8(vceqq_u8(chunk, vdupq_n_u8('"')), vceqq_u8(chunk, vdupq_n_u8('\\')));
     if constexpr (controls) bad = vorrq_u8(bad, vcltq_u8(chunk, vdupq_n_u8(0x20)));
     const std::uint64_t reduced = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(bad), 4)), 0);
-    return reduced == 0 ? size : (size - 16) + (static_cast<std::size_t>(__builtin_ctzll(reduced)) >> 2);
+    return reduced == 0 ? size : (size - 16) + (static_cast<std::size_t>(::gea::detail::countTrailingZeros64(reduced)) >> 2);
   }
 #endif
   if constexpr (jsonWordwise) {
@@ -43290,7 +43369,7 @@ inline std::size_t asciiRunEnd(const std::uint8_t* data, std::size_t size, std::
   }
   while (at + 16 <= size) {
     const int mask = _mm_movemask_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(data + at)));
-    if (mask != 0) return at + static_cast<std::size_t>(__builtin_ctz(static_cast<unsigned>(mask)));
+    if (mask != 0) return at + static_cast<std::size_t>(::gea::detail::countTrailingZeros32(static_cast<unsigned>(mask)));
     at += 16;
   }
 #elif defined(__ARM_NEON) && defined(__aarch64__)
@@ -43299,7 +43378,7 @@ inline std::size_t asciiRunEnd(const std::uint8_t* data, std::size_t size, std::
     if (vmaxvq_u8(chunk) >= 0x80) {
       const uint8x16_t flagged = vcgeq_u8(chunk, vdupq_n_u8(0x80));
       const std::uint64_t reduced = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(flagged), 4)), 0);
-      return at + (static_cast<std::size_t>(__builtin_ctzll(reduced)) >> 2);
+      return at + (static_cast<std::size_t>(::gea::detail::countTrailingZeros64(reduced)) >> 2);
     }
     at += 16;
   }
