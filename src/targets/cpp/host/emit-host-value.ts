@@ -1,6 +1,7 @@
 import type { CallableAbi, Representation } from '../../../representation/model.js'
 import type { RecordLayoutPolicy } from '../../../representation/policies.js'
 import type { IntrinsicAccessorGetter } from '../../../semantics/model/intrinsic-accessor-getters.js'
+import { toNumberText } from '../emit-tonumber.js'
 import { cppCallableParameterType, cppResultTypeOf, cppStringLiteral, cppTypeOf } from '../types.js'
 import { toStringTextOver } from '../emit-tostring.js'
 import { booleanTestText } from '../emit-presence.js'
@@ -283,6 +284,17 @@ export const hostClassValueText = (representation: Representation, className: st
       const parameter = callAbi.parameters[0]
       if (first === undefined || parameter === undefined) return 'false'
       return booleanTestText(first, parameter.value)
+    })
+  }
+  // `Number(value)` is ToNumeric(value) (ECMA-262 21.1.1.1), which `toNumberText` already answers per carrier --
+  // `Number(null)` is 0 and `Number(undefined)` is NaN, so no single C++ function stands for it either. No
+  // argument at all is +0.
+  if (className === 'Number') {
+    return capturelessHostThunkText(dispatch, (names, callAbi) => {
+      const first = names[0]
+      const parameter = callAbi.parameters[0]
+      if (first === undefined || parameter === undefined) return '0.0'
+      return toNumberText(first, parameter.value)
     })
   }
   const path = hostClassCallPaths.get(className)
