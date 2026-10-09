@@ -1831,6 +1831,8 @@ export interface EmitContext {
    * the call now runs on the array element in place.
    */
   readonly forwardedBindings: ReadonlyMap<DeclarationId, ForwardedBinding>
+  /** Local cells that point at an array element instead of copying it (`borrowed-bindings.ts`): declared `const T*`, read through `*`. */
+  readonly borrowedBindings: ReadonlySet<DeclarationId>
   /**
    * Every local this body needs, declared once at the top rather than where it
    * is first assigned.
@@ -1965,6 +1967,7 @@ export interface EmitBodyPrepassFacts {
   readonly narrowedFormalValues: Set<IrValueId>
   readonly directBindingSinks: Map<IrValueId, DeclarationId>
   readonly forwardedBindings: Map<DeclarationId, ForwardedBinding>
+  readonly borrowedBindings: Set<DeclarationId>
   readonly capacityHints: Map<IrValueId, CapacitySource>
   readonly charCodeBuffers: CharCodeBufferFacts
   readonly fillLoops: Map<IrBlockId, FillLoop>
@@ -2071,6 +2074,7 @@ export const createEmitContext = (
   const narrowedFormalValues = new Set<IrValueId>()
   const directBindingSinks = new Map<IrValueId, DeclarationId>()
   const forwardedBindings = new Map<DeclarationId, ForwardedBinding>()
+  const borrowedBindings = new Set<DeclarationId>()
   const capacityHints = new Map<IrValueId, CapacitySource>()
   const charCodeBuffers = createCharCodeBufferFacts()
   const fillLoops = new Map<IrBlockId, FillLoop>()
@@ -2215,6 +2219,7 @@ export const createEmitContext = (
     declaredBindings: new Set(),
     directBindingSinks,
     forwardedBindings,
+    borrowedBindings,
     declarations: [],
     symbolKeys,
     templateObjects,
@@ -2257,6 +2262,7 @@ export const createEmitContext = (
       narrowedFormalValues,
       directBindingSinks,
       forwardedBindings,
+      borrowedBindings,
       capacityHints,
       charCodeBuffers,
       fillLoops,

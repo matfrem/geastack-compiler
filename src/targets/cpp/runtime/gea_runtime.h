@@ -934,6 +934,18 @@ struct gea_native_protocol_RegExpConstructor_v1 {};
 
 namespace gea {
 
+/**
+ * The address of an object that already lives somewhere (an array's element). Taking a reference and deleting the
+ * rvalue overload is the point: a cell the compiler planned to point at storage can never be left pointing at the
+ * temporary a copying read would have produced.
+ */
+template <typename T>
+inline const T* borrowAddress(const T& stored) {
+  return &stored;
+}
+template <typename T>
+const T* borrowAddress(const T&&) = delete;
+
 // Pieces are already evaluated. Views borrow their strings only for this
 // full expression; allocating the destination once avoids copying each prefix
 // of a lowered concatenation chain. Explicit sizes preserve embedded NULs.

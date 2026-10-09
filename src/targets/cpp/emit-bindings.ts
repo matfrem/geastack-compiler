@@ -40,8 +40,8 @@ import { owningConversionInputText } from './owning-conversion-input.js'
  * pointee, not the pointer, so those two call sites dereference here instead
  * of inlining the same parenthesized `*` twice.
  */
-export const cellValueText = (cell: { readonly name: string; readonly boxed: boolean; readonly frame?: true }): string =>
-  cell.boxed && cell.frame !== true ? `(*${cell.name})` : cell.name
+export const cellValueText = (cell: { readonly name: string; readonly boxed: boolean; readonly frame?: true; readonly borrowed?: true }): string =>
+  (cell.boxed && cell.frame !== true) || cell.borrowed === true ? `(*${cell.name})` : cell.name
 
 /**
  * A checker-narrowed structural record carried inside one arm of a cell's
@@ -471,6 +471,22 @@ export const emitBindingWrite = (ctx: EmitContext, lines: string[], operation: B
       : undefined
     : undefined
   const cell = bindingReference(ctx, operation.declaration, 'a binding write')
+  // A cell that points at an array element (`borrowed-bindings.ts`): declared as a pointer, filled with the address of
+  // the element read the write names, and dereferenced by every read. `borrowAddress` takes a reference and refuses an
+  // rvalue, so an element read that produced a copy could never leave this pointing at a dead temporary.
+  if (cell.borrowed === true) {
+    const held = ctx.placements.get(operation.declaration)?.representation
+    if (!held || !ctx.deferredTexts.has(operation.value.value)) {
+      throw createCppEmitBlockedError(
+        'native-boundary:borrowed-binding',
+        `${operation.declaration} was planned as a reference to an array element, but the value it stores is not the withheld element read`
+      )
+    }
+    declareCell(ctx, cell.name, `const ${cppTypeOf(held)}*`)
+    lines.push(`${cell.name} = gea::borrowAddress(${operandText(ctx, operation.value)});`)
+    ctx.declaredBindings.add(operation.declaration)
+    return
+  }
   if (classObjectCopy !== undefined) {
     lines.push(`${cellValueText(cell)} = ${cellValueText(bindingReference(ctx, classObjectCopy, 'a class object alias'))};`)
     return

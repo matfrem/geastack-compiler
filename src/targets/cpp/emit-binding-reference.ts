@@ -85,7 +85,7 @@ export const bindingReference = (
   ctx: EmitContext,
   declaration: DeclarationId,
   what: string
-): { name: string; owned: boolean; boxed: boolean; capture?: true; frame?: true } => {
+): { name: string; owned: boolean; boxed: boolean; capture?: true; frame?: true; borrowed?: true } => {
   // A cell the frame's own formal already holds (`EmitContext.formalCells`).
   // Answered before the placement is read, because the answer is not about
   // storage this body allocates: there is none to allocate.
@@ -254,10 +254,11 @@ export const bindingReference = (
       frame: true
     }
   }
+  const borrowed = ctx.borrowedBindings.has(declaration) ? ({ borrowed: true } as const) : {}
   const existing = ctx.bindingNames.get(declaration)
-  if (existing !== undefined) return { name: existing, owned: true, boxed: ctx.captures.isBoxed(declaration) }
+  if (existing !== undefined) return { name: existing, owned: true, boxed: ctx.captures.isBoxed(declaration), ...borrowed }
   const name = `b${ctx.nextBindingOrdinal}`
   ctx.nextBindingOrdinal += 1
   ctx.bindingNames.set(declaration, name)
-  return { name, owned: true, boxed: ctx.captures.isBoxed(declaration) }
+  return { name, owned: true, boxed: ctx.captures.isBoxed(declaration), ...borrowed }
 }

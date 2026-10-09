@@ -163,6 +163,7 @@ import { templateText, toStringRefusal } from './emit-tostring.js'
 import { mixedDynamicPlusText } from './emit-mixed-binary.js'
 import { emitFieldStore, emitGet, isPlainMemberRead } from './emit-properties.js'
 import { noHeapReadOnly, type HeapReadOnlyOracle } from './heap-read-only.js'
+import { borrowedBindingsOf } from './borrowed-bindings.js'
 import { directClassMethodBody } from './class-properties/emit-class-properties.js'
 import { classMemberOf, lazyCalleeReadsOf, structNameOfReceiver } from './class-layout.js'
 import {
@@ -3125,6 +3126,32 @@ export const emitBody = (
   // After the hoists, because a window's own bound is often the loop-invariant
   // read they relocate, and a relocated value is one this may name.
   admitDenseWindows(ctx, prepass, body, hoists)
+  // Cells that point at an array element instead of copying it. After the deferral census (it needs the element read
+  // withheld) and the heap-read-only proof (a call inside the cell's live range must not touch the array).
+  for (const declaration of borrowedBindingsOf({
+    body,
+    deferrable: prepass.deferrable,
+    eligibleCell: (candidate) => {
+      const placement = ctx.placements.get(candidate)
+      return (
+        placement?.storage.kind === 'local' &&
+        placement.storage.owner === ctx.owner &&
+        !ctx.captures.isBoxed(candidate) &&
+        !ctx.captures.isCaptured(candidate) &&
+        ctx.captures.frameMemberOf(candidate) === null &&
+        !ctx.formalCells.has(candidate) &&
+        !ctx.hostMethodAliases.has(candidate) &&
+        !prepass.forwardedBindings.has(candidate) &&
+        !prepass.typeQueryBindings.has(candidate) &&
+        !prepass.integerBindings.has(candidate) &&
+        !prepass.float32.bindings.has(candidate)
+      )
+    },
+    heldCarrier: (candidate) => ctx.placements.get(candidate)?.representation ?? null,
+    plainRead: (operation, key) => isPlainMemberRead(ctx, operation, key),
+    readOnlyCallee: (owner) => ctx.heapReadOnly.isReadOnly(owner)
+  }))
+    prepass.borrowedBindings.add(declaration)
   const isSingleBlock = body.blockOrder.length === 1
   const orderLabels = isSingleBlock ? new Map<IrBlockId, string>() : blockLabelsOf(body.blockOrder)
   const owner = sectionOwnerOf(body)
