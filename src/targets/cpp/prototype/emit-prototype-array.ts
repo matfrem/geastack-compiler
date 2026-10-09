@@ -712,11 +712,25 @@ const rangedMethodText =
   (member: string, clause: string, arities: readonly number[], elementOrdinal: number | null): ArrayCallRenderer =>
   (ctx, receiverText, element, args): string => {
     requireArity(member, clause, arities, args)
+    const texts = args.map((argument) => operandText(ctx, argument))
     for (let ordinal = 0; ordinal < args.length; ordinal += 1) {
-      if (ordinal === elementOrdinal) requireElement(member, ordinal, element, args)
-      else requireNumber(member, ordinal, args)
+      if (ordinal !== elementOrdinal) {
+        requireNumber(member, ordinal, args)
+        continue
+      }
+      // A value written into the array takes the element's carrier, as an assignment would: `fill(null)` over a
+      // nullable class element is a `null` literal that converts, not a different kind of array.
+      const argument = args[ordinal]
+      if (argument !== undefined && elementKey(argument.representation) !== elementKey(element)) {
+        const aligned = alignedValueText(ctx, 'prototype/emit-prototype-array.ts:ranged', argument.representation, element, texts[ordinal] ?? '')
+        if (aligned !== null) {
+          texts[ordinal] = aligned
+          continue
+        }
+      }
+      requireElement(member, ordinal, element, args)
     }
-    return call(ctx, member, receiverText, args)
+    return `gea::runtime::array::${member}(${[receiverText, ...texts].join(', ')})`
   }
 
 /**
