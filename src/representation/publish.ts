@@ -196,6 +196,13 @@ const mapPairCursorElementOf = (
   if (pair.kind === 'array-object' && pair.extension === null && pair.element.kind === 'dynamic') {
     return source.key.kind === 'dynamic' && source.value.kind === 'dynamic' ? pair : null
   }
+  // A `[number, number]` the program also holds as a `number[]` derives as an Array of the one carrier both halves
+  // have; the cursor mints that Array per step (`makeMapEntry`'s shared-array pair), as it does for `[unknown, unknown]`.
+  if (pair.kind === 'array-object' && pair.extension === null && pair.ownership === 'shared-refcount') {
+    return representationKey(pair.element) === representationKey(source.key) && representationKey(pair.element) === representationKey(source.value)
+      ? pair
+      : null
+  }
   if (pair.kind !== 'record' || pair.fields.length !== 2) return null
   const [first, second] = pair.fields
   if (!first || !second || first.key !== '0' || second.key !== '1') return null
