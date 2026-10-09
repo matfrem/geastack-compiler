@@ -42,8 +42,6 @@ const copyCostsWork = (representation: Representation): boolean => {
     case 'string':
     case 'tagged-union':
       return true
-    case 'optional':
-      return copyCostsWork(representation.payload)
     default:
       return false
   }
@@ -105,6 +103,11 @@ export const borrowedBindingsOf = (context: BorrowedBindingContext): ReadonlySet
     if (!isArrayElementRead(element, strings.get(element.key.value) ?? null)) continue
     if (!context.deferrable.has(only.value) || (uses.get(only.value) ?? 0) !== 1) continue
     if (!copyCostsWork(element.result.representation)) continue
+    // The read must hand back the stored element itself (`const Element&`). An absence-capable read -- the array's
+    // element carrier wrapped in an `Optional` -- builds a new value, and there is nothing in storage to point at.
+    const receiver = element.receiver.representation
+    if (receiver.kind !== 'array-object' || representationKey(receiver.element) !== representationKey(element.result.representation))
+      continue
     const held = context.heldCarrier(declaration)
     if (held === null || representationKey(held) !== representationKey(element.result.representation)) continue
     if (!receiverOutlivesTheRead(element, producers, context.plainRead, strings)) continue
