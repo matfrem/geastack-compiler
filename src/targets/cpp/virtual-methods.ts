@@ -27,6 +27,7 @@ import { cppFormalName } from './emit-context.js'
 import { wellKnownSymbolEnumNameOf } from './records.js'
 import {
   cppAbiParameterType,
+  cppCallableParameterType,
   cppBodyName,
   cppCallableDeclarationTagName,
   cppClassName,
@@ -484,7 +485,7 @@ export const prototypeReadHooks = (
       const receiver = abi.receiver
       const formals = [
         `${cppTypeOf(receiver)} gea_receiver`,
-        ...abi.parameters.map((p, i) => `${cppAbiParameterType(p)} ${cppFormalName(i)}`)
+        ...abi.parameters.map((p, i) => `${cppCallableParameterType(p)} ${cppFormalName(i)}`)
       ]
       const actuals = ['gea_receiver', ...abi.parameters.map((_, i) => cppFormalName(i))]
       const thunk = `+[](void*, ${formals.join(', ')}) -> ${cppResultTypeOf(abi.result)} { return ${cppBodyName(method.callable)}(${actuals.join(', ')}); }`

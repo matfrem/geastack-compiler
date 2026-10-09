@@ -36,7 +36,7 @@ import {
 } from './records.js'
 import { evaluatedOnceText } from './evaluated-once.js'
 import {
-  cppAbiParameterType,
+  cppCallableParameterType,
   cppBodyName,
   cppCallableDeclarationTagName,
   cppClassName,
@@ -222,7 +222,7 @@ const boundClassMethodText = (
     return trace("member's rest parameter is not the method's own packed rest")
   if (ctx.captures.of(site.method.callable).kind !== 'none') return trace('method captures, and the environment slot holds the receiver')
   const receiverType = cppTypeOf(source)
-  const formals = abi.parameters.map((parameter, ordinal) => `${cppAbiParameterType(parameter)} ${viewArgumentName(ordinal)}`)
+  const formals = abi.parameters.map((parameter, ordinal) => `${cppCallableParameterType(parameter)} ${viewArgumentName(ordinal)}`)
   // A member frame wider than the method's own fixed frame -- a callback
   // overload joined into the member (`host-abi.ts`'s
   // `callbackOverloadJoinedAbi`) held by a class declaring only the promise

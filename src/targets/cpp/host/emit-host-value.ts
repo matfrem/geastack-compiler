@@ -1,7 +1,7 @@
 import type { CallableAbi, Representation } from '../../../representation/model.js'
 import type { RecordLayoutPolicy } from '../../../representation/policies.js'
 import type { IntrinsicAccessorGetter } from '../../../semantics/model/intrinsic-accessor-getters.js'
-import { cppAbiParameterType, cppResultTypeOf, cppStringLiteral, cppTypeOf } from '../types.js'
+import { cppCallableParameterType, cppResultTypeOf, cppStringLiteral, cppTypeOf } from '../types.js'
 import { toStringTextOver } from '../emit-tostring.js'
 import { booleanTestText } from '../emit-presence.js'
 import { hostArgumentText } from './emit-host-arity.js'
@@ -62,12 +62,12 @@ const capturelessHostThunkText = (
   const abi = representation.abi
   if (abi.receiver !== null) return null
   const names = abi.parameters.map((_, index) => `a${index}`)
-  const formals = abi.parameters.map((parameter, index) => `${cppAbiParameterType(parameter)} ${names[index]}`)
+  const formals = abi.parameters.map((parameter, index) => `${cppCallableParameterType(parameter)} ${names[index]}`)
   const result = cppResultTypeOf(abi.result)
   const call = callText(names, abi)
   if (call === null) return null
   const body = abi.result.kind === 'void' ? `${call};` : `return ${call};`
-  const signature = `${result}(${abi.parameters.map(cppAbiParameterType).join(', ')})`
+  const signature = `${result}(${abi.parameters.map(cppCallableParameterType).join(', ')})`
   return `gea::CallableObject<${signature}>(+[](void*${formals.map((formal) => `, ${formal}`).join('')}) -> ${result} { ${body} }, nullptr)`
 }
 
@@ -432,6 +432,6 @@ const prototypeMethodDispatchText = (protocol: string, member: string, result: s
 export const hostPrototypeMethodSignatureText = (representation: Representation): string | null => {
   if (representation.kind !== 'function-value-dispatch') return null
   const { abi } = representation
-  const parameters = [...(abi.receiver === null ? [] : [cppTypeOf(abi.receiver)]), ...abi.parameters.map(cppAbiParameterType)]
+  const parameters = [...(abi.receiver === null ? [] : [cppTypeOf(abi.receiver)]), ...abi.parameters.map(cppCallableParameterType)]
   return `${cppResultTypeOf(abi.result)}(${parameters.join(', ')})`
 }

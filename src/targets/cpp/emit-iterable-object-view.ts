@@ -4,7 +4,7 @@ import { iterableObjectViewPlan, type IterableObjectViewPlan } from '../../conve
 import { alignedValueText, chainConverts, type ConversionSite } from './emit-narrowing.js'
 import { viewPlanFor } from './emit-record-view.js'
 import {
-  cppAbiParameterType,
+  cppCallableParameterType,
   cppRecordFieldName,
   cppRecordFieldPresenceName,
   cppRecordStructName,
@@ -50,7 +50,7 @@ export const iterableObjectViewText = (
   const member = cppTypeOf(field.value.kind === 'optional' ? field.value.payload : field.value)
   const formals = [
     ...(abi.receiver === null ? [] : [`${cppTypeOf(abi.receiver)} gea_view_this`]),
-    ...abi.parameters.map((parameter, ordinal) => `${cppAbiParameterType(parameter)} gea_view_arg_${ordinal}`)
+    ...abi.parameters.map((parameter, ordinal) => `${cppCallableParameterType(parameter)} gea_view_arg_${ordinal}`)
   ]
   const signature = `void* gea_view_env${formals.length > 0 ? ', ' : ''}${formals.join(', ')}`
   const resultType = cppResultTypeOf(abi.result)

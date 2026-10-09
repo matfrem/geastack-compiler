@@ -20,7 +20,7 @@ import {
 } from './emit-context.js'
 import {
   literalPropertyKeyText,
-  cppAbiParameterType,
+  cppCallableParameterType,
   cppClassName,
   cppRecordFieldName,
   cppRecordFieldPresenceName,
@@ -626,7 +626,7 @@ const builtinCallableMethodText = (produced: Representation, key: string, read: 
   // method is a plain forward, with nothing to box. `apply` is the same
   // forward when the function's own frame is `(this, rest array)`: the array
   // `apply` spreads is exactly the rest array the body binds.
-  const parameterTypes = abi.parameters.map(cppAbiParameterType)
+  const parameterTypes = abi.parameters.map(cppCallableParameterType)
   const sameFrame = cppTypeOf(receiver) === `gea::CallableObject<${cppResultTypeOf(abi.result)}(${parameterTypes.join(', ')})>`
   const restFrame =
     key === 'apply' &&
@@ -658,7 +658,7 @@ const builtinCallableMethodText = (produced: Representation, key: string, read: 
     if (loaded === null) return null
     body = `return ${loaded};`
   }
-  const formals = [cppTypeOf(receiver), ...abi.parameters.map(cppAbiParameterType)].map((type, index) => `${type} gea_argument_${index}`)
+  const formals = [cppTypeOf(receiver), ...abi.parameters.map(cppCallableParameterType)].map((type, index) => `${type} gea_argument_${index}`)
   const type = cppTypeOf(produced)
   return (
     `[&]() { const gea::Value gea_builtin = ${read()}; ` +

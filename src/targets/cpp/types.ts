@@ -1013,6 +1013,20 @@ export const cppAbiParameterType = (parameter: AbiParameter): string => {
 }
 
 /**
+ * A parameter as a function VALUE's signature spells it: a handle (`gea::Ref<T>`) is passed by reference.
+ *
+ * The caller of a callback holds the handle already, so a by-value formal copies it (a refcount increment and
+ * decrement per call) for a callee that, most often, only reads it -- every `forEach`/`some`/`find` callback. A callee
+ * that keeps the handle copies it itself, once, which is the copy the by-value formal made anyway. Strings and the
+ * rest keep their spelling: `passing` is the ABI's own statement of which carriers are references, and the handles
+ * among them are the ones this spells.
+ */
+export const cppCallableParameterType = (parameter: AbiParameter): string =>
+  parameter.passing === 'const-ref' && parameter.value.kind !== 'string' && parameter.value.kind !== 'callable-identity'
+    ? `const ${cppAbiParameterType(parameter)}&`
+    : cppAbiParameterType(parameter)
+
+/**
  * Whether a receiver's carrier is a refcounted handle.
  *
  * A body that takes one BY VALUE increments and decrements a count on every
@@ -1061,7 +1075,7 @@ export const cppTaggedUnionArmType = (arm: TaggedUnionArm): string =>
  */
 export const cppAbiType = (abi: CallableAbi): string => {
   const receiver = abi.receiver === null ? [] : [cppTypeOf(abi.receiver)]
-  const parameters = abi.parameters.map(cppAbiParameterType)
+  const parameters = abi.parameters.map(cppCallableParameterType)
   return `${cppResultTypeOf(abi.result)}(${[...receiver, ...parameters].join(', ')})`
 }
 

@@ -5,7 +5,7 @@ import { alignedValueText, chainConverts, type ConversionSite } from './emit-nar
 import { viewPlanFor } from './emit-record-view.js'
 import { memberAccessOperator } from './emit-carrier-members.js'
 import {
-  cppAbiParameterType,
+  cppCallableParameterType,
   cppRecordFieldName,
   cppRecordFieldPresenceName,
   cppRecordStructName,
@@ -88,7 +88,7 @@ export const iteratorObjectViewText = (
     const { abi } = planned
     const formals = [
       ...(abi.receiver === null ? [] : [`${cppTypeOf(abi.receiver)} gea_view_this`]),
-      ...abi.parameters.map((parameter, ordinal) => `${cppAbiParameterType(parameter)} gea_view_arg_${ordinal}`)
+      ...abi.parameters.map((parameter, ordinal) => `${cppCallableParameterType(parameter)} gea_view_arg_${ordinal}`)
     ]
     const signature = `void* gea_view_env${formals.length > 0 ? ', ' : ''}${formals.join(', ')}`
     const resultType = cppResultTypeOf(abi.result)

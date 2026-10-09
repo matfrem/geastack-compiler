@@ -4980,6 +4980,10 @@ struct RestRebasable : std::false_type {};
 template <typename Element>
 struct RestRebasable<Element, Ref<ArrayObject<Element>>> : std::true_type {};
 
+/** The same terminal as a callable signature spells it: a handle parameter is `const Ref<T>&`. */
+template <typename Element>
+struct RestRebasable<Element, const Ref<ArrayObject<Element>>&> : std::true_type {};
+
 template <typename Element, typename First, typename... Rest>
 struct RestRebasable<Element, First, Rest...>
     : std::bool_constant<std::is_same_v<First, Optional<Element>> && RestRebasable<Element, Rest...>::value> {};
@@ -5000,6 +5004,12 @@ struct RestRebaseAdmits : std::false_type {};
 
 template <typename Element, typename... SourceArguments>
 struct RestRebaseAdmits<std::tuple<Ref<ArrayObject<Element>>>, std::tuple<SourceArguments...>>
+    : std::bool_constant<(sizeof...(SourceArguments) > 1) && RestRebasable<Element, SourceArguments...>::value> {
+  using element = Element;
+};
+
+template <typename Element, typename... SourceArguments>
+struct RestRebaseAdmits<std::tuple<const Ref<ArrayObject<Element>>&>, std::tuple<SourceArguments...>>
     : std::bool_constant<(sizeof...(SourceArguments) > 1) && RestRebasable<Element, SourceArguments...>::value> {
   using element = Element;
 };
@@ -20097,6 +20107,13 @@ struct DynamicCallableCarrier {
   static T in(const Value& value, std::size_t position) { return DynamicCarrier<T>::in(value, position); }
 };
 
+/**
+ * A callable's handle parameters are spelled `const Ref<T>&` (`types.ts`'s `cppCallableParameterType`); the carrier of
+ * a parameter is the carrier of the value it refers to.
+ */
+template <typename T>
+struct DynamicCallableCarrier<const T&> : DynamicCallableCarrier<T> {};
+
 template <>
 struct DynamicCallableCarrier<void> {
   static constexpr bool supported = true;
@@ -20253,6 +20270,9 @@ template <typename T>
 struct DynamicRestArgument {
   static constexpr bool supported = false;
 };
+
+template <typename T>
+struct DynamicRestArgument<const T&> : DynamicRestArgument<T> {};
 
 template <typename Element>
 struct DynamicRestArgument<gea::Ref<gea::ArrayObject<Element>>> {
@@ -35350,7 +35370,7 @@ inline gea::PropertyKey toPropertyKey(const gea::Value& value) {
  * not assumed. `max`/`min`/`hypot` are declared `(...values: number[])`; a
  * rest parameter's declared type is already the Array the language binds it
  * to (`derive.ts`'s `abiOf`), so all three take one
- * `CallableObject<double(Ref<ArrayObject<double>>)>`. Direct numeric max/min
+ * `CallableObject<double(const Ref<ArrayObject<double>>&)>`. Direct numeric max/min
  * calls additionally have a borrowed initializer-list entry; first-class
  * values and spread calls retain the array-parameter convention.
  */
@@ -35457,7 +35477,7 @@ inline double extremumStep(double result, double value) {
   return result;
 }
 
-inline double max_invoke(void*, gea::Ref<gea::ArrayObject<double>> values) {
+inline double max_invoke(void*, const gea::Ref<gea::ArrayObject<double>>& values) {
   double result = -std::numeric_limits<double>::infinity();
   for (const auto& slot : values->slots()) {
     if (!slot.present) continue;
@@ -35467,7 +35487,7 @@ inline double max_invoke(void*, gea::Ref<gea::ArrayObject<double>> values) {
   return result;
 }
 
-inline double min_invoke(void*, gea::Ref<gea::ArrayObject<double>> values) {
+inline double min_invoke(void*, const gea::Ref<gea::ArrayObject<double>>& values) {
   double result = std::numeric_limits<double>::infinity();
   for (const auto& slot : values->slots()) {
     if (!slot.present) continue;
@@ -35523,7 +35543,7 @@ inline double hypotScaled(Each&& each) {
   return largest * std::sqrt(sumOfSquares);
 }
 
-inline double hypot_invoke(void*, gea::Ref<gea::ArrayObject<double>> values) {
+inline double hypot_invoke(void*, const gea::Ref<gea::ArrayObject<double>>& values) {
   return hypotScaled([&](auto&& visit) {
     for (const auto& slot : values->slots()) {
       if (slot.present) visit(slot.value);
@@ -35645,8 +35665,8 @@ inline constexpr gea::HostFunction<double(double), &detail::atan_invoke> atan{};
 inline constexpr gea::HostFunction<double(double), &detail::sinh_invoke> sinh{};
 inline constexpr gea::HostFunction<double(double), &detail::log_invoke> log{};
 inline constexpr gea::HostFunction<double(), &detail::random_invoke> random{};
-inline constexpr gea::HostFunction<double(gea::Ref<gea::ArrayObject<double>>), &detail::max_invoke> max{};
-inline constexpr gea::HostFunction<double(gea::Ref<gea::ArrayObject<double>>), &detail::min_invoke> min{};
+inline constexpr gea::HostFunction<double(const gea::Ref<gea::ArrayObject<double>>&), &detail::max_invoke> max{};
+inline constexpr gea::HostFunction<double(const gea::Ref<gea::ArrayObject<double>>&), &detail::min_invoke> min{};
 // A direct call's already-evaluated numeric operands need no JS array identity.
 // The initializer list borrows native stack storage for this synchronous call.
 inline double maxDirect(std::initializer_list<double> values) {
@@ -35665,7 +35685,7 @@ inline double hypotDirect(std::initializer_list<double> values) {
     for (double value : values) visit(value);
   });
 }
-inline constexpr gea::HostFunction<double(gea::Ref<gea::ArrayObject<double>>), &detail::hypot_invoke> hypot{};
+inline constexpr gea::HostFunction<double(const gea::Ref<gea::ArrayObject<double>>&), &detail::hypot_invoke> hypot{};
 // The sixteen members `lib.es2015.core.d.ts` adds to `Math` beyond the ES5 set
 // plus `cbrt`, each over the same exact scalar ABI as the row above. `imul` is
 // the one binary member here; every other is `(x: number) => number`.
@@ -36020,7 +36040,7 @@ inline void appendCharCode(std::string& result, double raw) {
   gea::runtime::string::appendUtf8CodeUnit(result, static_cast<std::uint16_t>(unit));
 }
 
-inline std::string fromCharCode_invoke(void*, gea::Ref<gea::ArrayObject<double>> codes) {
+inline std::string fromCharCode_invoke(void*, const gea::Ref<gea::ArrayObject<double>>& codes) {
   std::string result;
   result.reserve(codes->size());
   for (const auto& slot : codes->slots()) appendCharCode(result, slot.present ? slot.value : 0.0);
@@ -36043,7 +36063,7 @@ inline void appendCodePoint(std::string& result, double raw) {
  * code-unit append so separately passed surrogate halves join exactly as
  * `fromCharCode`'s do.
  */
-inline std::string fromCodePoint_invoke(void*, gea::Ref<gea::ArrayObject<double>> codePoints) {
+inline std::string fromCodePoint_invoke(void*, const gea::Ref<gea::ArrayObject<double>>& codePoints) {
   std::string result;
   result.reserve(codePoints->size());
   for (const auto& slot : codePoints->slots()) appendCodePoint(result, slot.present ? slot.value : std::numeric_limits<double>::quiet_NaN());
@@ -36052,8 +36072,8 @@ inline std::string fromCodePoint_invoke(void*, gea::Ref<gea::ArrayObject<double>
 
 }  // namespace detail
 
-inline constexpr gea::HostFunction<std::string(gea::Ref<gea::ArrayObject<double>>), &detail::fromCharCode_invoke> fromCharCode{};
-inline constexpr gea::HostFunction<std::string(gea::Ref<gea::ArrayObject<double>>), &detail::fromCodePoint_invoke> fromCodePoint{};
+inline constexpr gea::HostFunction<std::string(const gea::Ref<gea::ArrayObject<double>>&), &detail::fromCharCode_invoke> fromCharCode{};
+inline constexpr gea::HostFunction<std::string(const gea::Ref<gea::ArrayObject<double>>&), &detail::fromCodePoint_invoke> fromCodePoint{};
 // A direct call's already-evaluated numeric operands need no JS array
 // identity (the same borrowed stack sequence `Math::maxDirect` takes). The
 // bson deserializer's `String.fromCharCode(bytes[i])` per short string was

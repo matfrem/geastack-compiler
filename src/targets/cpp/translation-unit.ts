@@ -115,6 +115,7 @@ import type { RepresentationDeriver } from '../../representation/derive.js'
 import {
   cppAbiParameterType,
   cppAbiType,
+  cppCallableParameterType,
   cppStringLiteral,
   cppBodyName,
   cppCallableDeclarationTagName,
@@ -569,7 +570,8 @@ const formalsOf = (
   abi: CallableAbi,
   narrowed: ReadonlySet<number> = new Set(),
   borrowReceiver = false,
-  borrowed: ReadonlySet<number> = new Set()
+  borrowed: ReadonlySet<number> = new Set(),
+  asThunk = false
 ): readonly string[] => [
   ...(abi.receiver === null
     ? []
@@ -579,7 +581,9 @@ const formalsOf = (
       ? cppNarrowedIntegerType
       : borrowed.has(ordinal)
         ? `const ${cppAbiParameterType(parameter)}&`
-        : cppAbiParameterType(parameter)
+        : asThunk
+          ? cppCallableParameterType(parameter)
+          : cppAbiParameterType(parameter)
     return `${type} ${cppFormalName(ordinal)}`
   })
 ]
@@ -1112,7 +1116,13 @@ const constructionsOf = (
     // lines after the construct itself.
     const stateFormal = 'gea::NativeClassMethodState* gea_method_state'
     const constructSignature = `${prefix}${result} ${name}(${[stateFormal, ...formals].join(', ')})`
-    const thunkSignature = `${prefix}${result} ${cppConstructThunkName(layout.declaration)}(${['void* gea_environment', ...formals].join(', ')})`
+    // The thunk is the function VALUE's entry, so it takes handles the way the value's signature spells them
+    // (`cppCallableParameterType`); the construct function behind it keeps its own by-value formals.
+    const thunkFormals = abi.parameters.map((parameter, ordinal) => `${cppCallableParameterType(parameter)} ${cppFormalName(ordinal)}`)
+    const thunkActuals = abi.parameters.map(
+      (parameter, ordinal) => `std::forward<${cppCallableParameterType(parameter)}>(${cppFormalName(ordinal)})`
+    )
+    const thunkSignature = `${prefix}${result} ${cppConstructThunkName(layout.declaration)}(${['void* gea_environment', ...thunkFormals].join(', ')})`
     const allocation = `${result} ${cppReceiverName} = gea::makeRef<${cppClassName(layout.declaration)}>();`
     const initialization = extended.has(layout.declaration)
       ? [`${initializerName}(${[cppReceiverName, ...actuals].join(', ')});`]
@@ -1142,7 +1152,7 @@ const constructionsOf = (
         `return ${cppReceiverName};`,
         '}'
       ].join('\n'),
-      `${thunkSignature} { return ${name}(${['static_cast<gea::NativeClassMethodState*>(gea_environment)', ...actuals].join(', ')}); }`
+      `${thunkSignature} { return ${name}(${['static_cast<gea::NativeClassMethodState*>(gea_environment)', ...thunkActuals].join(', ')}); }`
     )
     constructions.push({
       declaration: layout.declaration,
@@ -1242,7 +1252,7 @@ const thunkOf = (
   const abi = body.abi
   const admission = captures.of(body.sourceOwner)
   const hasEnvironment = admission.kind === 'ok'
-  const formals = [hasEnvironment ? `void* ${cppEnvironmentParamName}` : 'void*', ...formalsOf(abi)]
+  const formals = [hasEnvironment ? `void* ${cppEnvironmentParamName}` : 'void*', ...formalsOf(abi, new Set(), false, new Set(), true)]
   // One pointer of stack, which `gea::unpackEnvironment` copies the captured
   // state into where the state fits in the pointer the carrier holds and
   // ignores where the state is on the heap. Declared here rather than inside
@@ -1277,7 +1287,7 @@ const thunkOf = (
     ...abi.parameters.map((parameter, ordinal) =>
       narrowed.has(ordinal)
         ? `static_cast<${cppNarrowedIntegerType}>(${cppFormalName(ordinal)})`
-        : `std::forward<${cppAbiParameterType(parameter)}>(${cppFormalName(ordinal)})`
+        : `std::forward<${cppCallableParameterType(parameter)}>(${cppFormalName(ordinal)})`
     )
   ].join(', ')})`
   // The thunk's own result stays the ABI's, so the carrier's function-pointer
@@ -1333,7 +1343,7 @@ const constructThunkOf = (
   const construct = body.construct
   if (!construct) return null
   const instance = construct.result
-  const formals = [hasEnvironment ? `void* ${cppEnvironmentParamName}` : 'void*', ...formalsOf(construct)]
+  const formals = [hasEnvironment ? `void* ${cppEnvironmentParamName}` : 'void*', ...formalsOf(construct, new Set(), false, new Set(), true)]
   const signature = `${linkagePrefix(linkage)}${cppResultTypeOf(instance)} ${cppConstructedThunkName(body.sourceOwner)}(${formals.join(', ')})`
   // A body that never reads `this` declares no receiver (`structural-
   // receiver.ts` gates the JS-constructor receiver on `bodyReadsThis`), and

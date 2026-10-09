@@ -68,7 +68,7 @@ import {
 import { booleanTestText } from './emit-presence.js'
 import { recastedRecordToArrayText } from './emit-arrays.js'
 import {
-  cppAbiParameterType,
+  cppCallableParameterType,
   cppAbiType,
   cppClassName,
   cppConstantLiteral,
@@ -2995,7 +2995,7 @@ const resultAdapterOf = (
       continue
     }
     const formal = adapterFormalName(ordinal)
-    if (cppAbiParameterType(parameter) === cppAbiParameterType(slot)) {
+    if (cppCallableParameterType(parameter) === cppCallableParameterType(slot)) {
       actuals.push(formal)
       continue
     }
@@ -3262,7 +3262,7 @@ export const resultAdaptedCallableText = (
   const formals = [
     `void* ${adapterEnvironmentName}`,
     ...(adapter.to.receiver === null ? [] : [`${cppTypeOf(adapter.to.receiver)} ${adapterReceiverName}`]),
-    ...adapter.to.parameters.map((parameter, ordinal) => `${cppAbiParameterType(parameter)} ${adapterFormalName(ordinal)}`)
+    ...adapter.to.parameters.map((parameter, ordinal) => `${cppCallableParameterType(parameter)} ${adapterFormalName(ordinal)}`)
   ]
   const sourceActuals = [...(adapter.receiverActual === null ? [] : [adapter.receiverActual]), ...adapter.actuals]
   // A source that names its one function -- by its representation, or because the
@@ -3309,7 +3309,7 @@ const constructorDispatchAdapterText = (source: Representation, target: Represen
   if (from.receiver !== null || to.receiver !== null) return null
   if (from.restFrom !== null || to.restFrom !== null) return null
   if (from.parameters.slice(to.parameters.length).some((parameter) => cppUndefinedIn(parameter.value) === null)) return null
-  const formals = to.parameters.map((parameter, index) => `${cppAbiParameterType(parameter)} gea_argument_${index}`)
+  const formals = to.parameters.map((parameter, index) => `${cppCallableParameterType(parameter)} gea_argument_${index}`)
   const actuals: string[] = []
   for (const [index, slot] of from.parameters.entries()) {
     const parameter = to.parameters[index]
@@ -3318,8 +3318,8 @@ const constructorDispatchAdapterText = (source: Representation, target: Represen
       continue
     }
     const name = `gea_argument_${index}`
-    if (cppAbiParameterType(parameter) === cppAbiParameterType(slot)) {
-      actuals.push(`std::forward<${cppAbiParameterType(parameter)}>(${name})`)
+    if (cppCallableParameterType(parameter) === cppCallableParameterType(slot)) {
+      actuals.push(`std::forward<${cppCallableParameterType(parameter)}>(${name})`)
       continue
     }
     const converted = tryCandidateText(() => convertedValueText(parameter.value, slot.value, name))
@@ -4541,9 +4541,9 @@ export const conversionChain: readonly ConversionStep[] = [
       for (const [index, parameter] of target.abi.parameters.entries()) {
         const slot = source.abi.parameters[index]!
         const name = `gea_argument_${index}`
-        formals.push(`${cppAbiParameterType(parameter)} ${name}`)
-        if (cppAbiParameterType(parameter) === cppAbiParameterType(slot)) {
-          actuals.push(`std::forward<${cppAbiParameterType(parameter)}>(${name})`)
+        formals.push(`${cppCallableParameterType(parameter)} ${name}`)
+        if (cppCallableParameterType(parameter) === cppCallableParameterType(slot)) {
+          actuals.push(`std::forward<${cppCallableParameterType(parameter)}>(${name})`)
           continue
         }
         const converted = tryCandidateText(() => convertedValueText(parameter.value, slot.value, name))

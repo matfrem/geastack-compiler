@@ -29,7 +29,7 @@ import {
 } from '../class-layout.js'
 import { cppVirtualMemberName } from '../virtual-methods.js'
 import {
-  cppAbiParameterType,
+  cppCallableParameterType,
   cppBodyName,
   cppCallableDeclarationTagName,
   cppClassName,
@@ -523,7 +523,7 @@ const dynamicConstructorCandidateText = (ctx: EmitContext, target: CallableAbi, 
       `runtime class ${declaration}'s instance carrier "${representationKey(instance)}" cannot satisfy dynamic constructor result "${representationKey(target.result)}"`
     )
   }
-  const formals = target.parameters.map((parameter, position) => `${cppAbiParameterType(parameter)} gea_constructor_arg_${position}`)
+  const formals = target.parameters.map((parameter, position) => `${cppCallableParameterType(parameter)} gea_constructor_arg_${position}`)
   const thunk = `+[](void* gea_environment${formals.length === 0 ? '' : `, ${formals.join(', ')}`}) -> ${cppResultTypeOf(target.result)} { return ${result}; }`
   return `${cppTypeOf({ kind: 'constructor-value-dispatch', abi: target })}{${thunk}, gea::nativeClassMethodEnvironment(${state})}`
 }
